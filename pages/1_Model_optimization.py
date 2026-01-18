@@ -61,16 +61,16 @@ period_cut = {'1d': '2022-02-19', '5d': '2020-06-19', '1wk': '2020-06-19', '1mo'
 uploaded_file = st.file_uploader("Choose a file")
 
 
-try:
-    maindf = yf.download(tickers = f"{ticker}-USD",  # list of tickers
-                period = int_to_periods[interval],         # time period
-                interval = interval,       # trading interval
-                prepost = False,       # download pre/post market hours data?
-                repair = True,)         # repair obvious price errors e.g. 100x?
-    if len(maindf) == 0:
-        raise FileNotFoundError
-except:
-    maindf = pd.read_csv(f'{ticker}.csv')
+#try:
+maindf = yf.download(tickers = f"{ticker}-USD",  # list of tickers
+            period = int_to_periods[interval],         # time period
+            interval = interval,       # trading interval
+            prepost = False,       # download pre/post market hours data?
+            repair = True,)         # repair obvious price errors e.g. 100x?
+if len(maindf) == 0:
+    raise FileNotFoundError
+#except:
+#    maindf = pd.read_csv(f'{ticker}.csv')
 
 if uploaded_file is not None:
     # To read file as bytes:
