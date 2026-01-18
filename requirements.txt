@@ -3,4 +3,5 @@ pmdarima
 streamlit
 yfinance
 gmdh
-
+tqdm
+tensorflow
