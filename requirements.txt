@@ -5,3 +5,4 @@ yfinance
 gmdh
 tqdm
 tensorflow
+matplotlib
