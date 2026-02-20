@@ -28,6 +28,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     import torch
     import pmdarima as pm
     from pages.utils.utils import create_dataset, make_prediction
+
     # @st.cache_data
     def get_pipeline():
         pipeline = ChronosPipeline.from_pretrained(
@@ -139,7 +140,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
 
 
 
-    GMDH = True #st.sidebar.checkbox('Добавить режим МГУА')
+    GMDH = True  # Enabled for native ARM64 macOS support!
     transformer = True #st.sidebar.checkbox('Добавить режим Transformer')
     if GMDH:
         #expander1 = st.sidebar.expander('Гиперпараметры МГУА')
@@ -563,6 +564,10 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     # st.pyplot(fig)
     #ax.plot()
 
-    models_dict = {'LSTM': model, 'SARIMA': arima_model, 'GMDH_1': model_gmdh1, 'GMDH_2': model_gmdh2, 'Transformer': pipeline}
+    # Build models_dict conditionally based on which models were trained
+    models_dict = {'LSTM': model, 'SARIMA': arima_model, 'Transformer': pipeline}
+    if GMDH:
+        models_dict['GMDH_1'] = model_gmdh1
+        models_dict['GMDH_2'] = model_gmdh2
 
     return plotdf, metrics_df, models_dict

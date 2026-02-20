@@ -1,0 +1,21 @@
+[project]
+name = "app"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "chronos-forecasting",
+    "gmdh",
+    "matplotlib>=3.10.8",
+    "pmdarima",
+    "requests",
+    "scipy",
+    "streamlit",
+    "tensorflow==2.16.1",
+    "tqdm",
+    "yfinance",
+]
+
+[tool.uv.sources]
+chronos-forecasting = { git = "https://github.com/amazon-science/chronos-forecasting.git" }
