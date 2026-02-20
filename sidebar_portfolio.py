@@ -15,9 +15,6 @@ def sidebar():
     time_step_backward = st.sidebar.slider('Количество предикторов, дней', 1, 100, 15)
     allow_short = st.sidebar.checkbox('Разрешить короткие позиции')
 
-
-    scaling_strategy = 'average'
-    time_step_backward = 15
     return {'top_n': top_n,
             'num_scale_steps': num_scale_steps,
             'scaling_strategy': scaling_strategy,
