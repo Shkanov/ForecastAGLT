@@ -4,6 +4,9 @@ from datetime import datetime
 from tqdm import tqdm
 import numpy as np
 import scipy.optimize as sco
+from logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class DataLoader():
@@ -11,7 +14,6 @@ class DataLoader():
         self.correlation_threshold = correlation_threshold
     # Function to get top N cryptocurrency tickers
     def get_top_crypto_tickers(self, n):
-
         url = 'https://api.coingecko.com/api/v3/coins/markets'
         params = {
             'vs_currency': 'usd',
@@ -20,10 +22,31 @@ class DataLoader():
             'page': 1,
             'sparkline': 'false'
         }
-        response = requests.get(url, params=params)
-        data = response.json()
-        tickers = [coin['symbol'].upper() for coin in data]
-        return tickers
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if not isinstance(data, list) or len(data) == 0:
+                logger.error("API returned unexpected data format or empty list")
+                raise ValueError("No cryptocurrency data returned from API")
+
+            tickers = [coin['symbol'].upper() for coin in data]
+            logger.info(f"Successfully fetched {len(tickers)} tickers from CoinGecko API")
+            return tickers
+
+        except requests.exceptions.Timeout:
+            logger.error("API request timed out after 10 seconds")
+            raise
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP error occurred: {e}")
+            raise
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API request failed: {e}")
+            raise
+        except (KeyError, ValueError) as e:
+            logger.error(f"Error parsing API response: {e}")
+            raise
 
 
     # Function to validate if a ticker is compatible with yfinance
@@ -42,7 +65,7 @@ class DataLoader():
         self.tickers = self.get_top_crypto_tickers(top_n)
         # Validate tickers for compatibility with yfinance
         self.valid_tickers = [ticker for ticker in self.tickers if self.validate_ticker(ticker)]
-        print("Compatible tickers for yfinance:", len(self.valid_tickers))
+        logger.info(f"Compatible tickers for yfinance: {len(self.valid_tickers)}")
         self.invalid_tickers = []
 
         # Run experiments for each valid ticker
@@ -56,7 +79,7 @@ class DataLoader():
                 self.tickers_dict[ticker]['metrics_df'] = metrics_df
                 self.tickers_dict[ticker]['models_dict'] = models_dict
             except AssertionError as e:  # Или другой конкретный тип ошибки
-                print('EXCEPTION ', str(e), ticker)
+                logger.error(f'EXCEPTION {str(e)} {ticker}')
                 self.invalid_tickers.append(ticker)
                 continue
 
@@ -93,9 +116,9 @@ class DataLoader():
             if test_first_date > self.global_min_date:
                 self.global_min_date = test_first_date
 
-            print(train_last_date, train_last_valid_index, test_first_date, test_first_valid_index)
+            logger.debug(f"{train_last_date} {train_last_valid_index} {test_first_date} {test_first_valid_index}")
 
-        print(self.global_min_date , self.global_max_date)
+        logger.info(f"Global min date: {self.global_min_date}, Global max date: {self.global_max_date}")
 
         # Collect predictions for the global periods
         self.train_predictions_df_list = []
@@ -132,11 +155,11 @@ class DataLoader():
         for idx, feature in enumerate(self.valid_tickers):
             if idx == 0:
                 continue
-            print(idx, feature)
+            logger.debug(f"Processing feature {idx}: {feature}")
             tmp = self.train_predictions_df_list[0].merge(self.train_predictions_df_list[idx], on='date', how='inner')
             # Вычисляем корреляцию нового признака с уже выбранными
             correlations = [abs(tmp[feature].corr(tmp[sel_feature])) for sel_feature in self.selected_features]
-            print(correlations)
+            logger.debug(f"Correlations: {correlations}")
             max_correlation = max(correlations)
 
             # Добавляем признак, если максимальная корреляция не превышает порог
@@ -146,16 +169,16 @@ class DataLoader():
                 self.actual_prices_train[0] = self.actual_prices_train[0].merge(self.actual_prices_train[idx], on='date', how='inner')
                 self.test_predictions_df_list[0] = self.test_predictions_df_list[0].merge(self.test_predictions_df_list[idx], on='date', how='inner')
                 self.actual_prices_test[0] = self.actual_prices_test[0].merge(self.actual_prices_test[idx], on='date', how='inner')
-        print(self.selected_features)
+        logger.info(f"Selected features: {self.selected_features}")
 
         selected_features_and_date = ['date'] + self.selected_features
-        print(selected_features_and_date)
+        logger.info(f"Selected features with date: {selected_features_and_date}")
 
         # Calculate covariance matrix for the training period
         train_data = self.train_predictions_df_list[0].drop(columns=['date']).astype(float)
         self.cov_matrix = train_data[self.selected_features].cov()
-        print("Covariance matrix for the training period:")
-        print(self.cov_matrix)
+        logger.info("Covariance matrix for the training period:")
+        logger.info(f"\n{self.cov_matrix}")
 
         # Split the global test period into validation and test sets
         self.validation_size = int(len(self.test_predictions_df_list[0][selected_features_and_date]) * 0.5)
@@ -241,7 +264,7 @@ class Portfolio():
         realized_sharpe = np.mean(realized_returns) / np.mean(realized_vol)
         return abs(predicted_sharpe - realized_sharpe)
 
-    def optimize_portfolio(self, cov_matrix, validation_data, validation_actual, test_data, test_actual, target_return: int | None = None, allow_short: bool = False):
+    def optimize_portfolio(self, cov_matrix, validation_data, validation_actual, test_data, test_actual, target_return: float | None = None, allow_short: bool = False):
 
         # Calculate validation metrics
         self.val_pred_returns, self.val_realized_returns, self.val_pred_vol, self.val_realized_vol = self.process_period(data=validation_data,
@@ -271,16 +294,16 @@ class Portfolio():
         self.test_sum_pred_returns = np.sum(self.test_pred_returns)
         self.test_sum_realized_returns = np.sum(self.test_realized_returns)
 
-        print(f"Validation Return Accuracy: {self.val_return_accuracy}")
-        print(f"Validation Volatility Accuracy: {self.val_volatility_accuracy}")
-        print(f"Validation Sharpe Ratio Deviation: {self.val_sharpe_deviation}")
-        print(f"Validation Pred Return Sum: {self.val_sum_pred_returns}")
-        print(f"Validation Actual Return Sum: {self.val_sum_realized_returns}")
+        logger.info(f"Validation Return Accuracy: {self.val_return_accuracy}")
+        logger.info(f"Validation Volatility Accuracy: {self.val_volatility_accuracy}")
+        logger.info(f"Validation Sharpe Ratio Deviation: {self.val_sharpe_deviation}")
+        logger.info(f"Validation Pred Return Sum: {self.val_sum_pred_returns}")
+        logger.info(f"Validation Actual Return Sum: {self.val_sum_realized_returns}")
 
-        print(f"Test Return Accuracy: {self.test_return_accuracy}")
-        print(f"Test Volatility Accuracy: {self.test_volatility_accuracy}")
-        print(f"Test Sharpe Ratio Deviation: {self.test_sharpe_deviation}")
-        print(f"Test Pred Return Sum: {self.test_sum_pred_returns}")
-        print(f"Test Actual Return Sum: {self.test_sum_realized_returns}")
+        logger.info(f"Test Return Accuracy: {self.test_return_accuracy}")
+        logger.info(f"Test Volatility Accuracy: {self.test_volatility_accuracy}")
+        logger.info(f"Test Sharpe Ratio Deviation: {self.test_sharpe_deviation}")
+        logger.info(f"Test Pred Return Sum: {self.test_sum_pred_returns}")
+        logger.info(f"Test Actual Return Sum: {self.test_sum_realized_returns}")
 
         #return val_return_accuracy, val_volatility_accuracy, val_sharpe_deviation, np.sum(val_pred_vol), np.sum(val_realized_returns), test_return_accuracy, test_volatility_accuracy, test_sharpe_deviation, np.sum(test_pred_vol), np.sum(test_realized_returns)

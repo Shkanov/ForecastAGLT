@@ -1,6 +1,9 @@
 
 
 def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
+    from logging_config import get_logger
+    logger = get_logger(__name__)
+
     import pandas as pd
     import numpy as np
     import math
@@ -69,9 +72,9 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     maindf['Date'] = pd.to_datetime(maindf['Date'], format='%Y-%m-%d')
 
     #maindf = pd.read_csv('BTC-USD.csv')
-    print('Total number of days present in the dataset: ',maindf.shape[0])
-    print('Total number of fields present in the dataset: ',maindf.shape[1])
-    print(maindf.head())
+    logger.info(f'Total number of days present in the dataset: {maindf.shape[0]}')
+    logger.info(f'Total number of fields present in the dataset: {maindf.shape[1]}')
+    logger.debug(f'Dataset head:\n{maindf.head()}')
 
     y_overall = maindf.copy()
     #scaling_strategy_list = ['median', 'average', 'undersampling']
@@ -177,16 +180,16 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     # my_bar = st.progress(0, text='Model training progress. Truncating the dataset now')
     # Lets First Take all the Close Price
     closedf = y_overall[['Date', 'Close']].dropna()  # maindf[['Date', 'Close']]
-    print("Shape of close dataframe:", closedf.shape)
+    logger.info(f"Shape of close dataframe: {closedf.shape}")
     closedf = closedf[-1000:]  # closedf[closedf['Date'] > period_cut[interval]]
     close_stock = closedf.copy()
-    print("Total data for prediction: ", closedf.shape[0])
+    logger.info(f"Total data for prediction: {closedf.shape[0]}")
     # my_bar.progress(10 + 1, text='Truncated the dataset -> Scaling it')
     # deleting date column and normalizing using MinMax Scaler
 
     scaler = MinMaxScaler(feature_range=(0, 1))
     # closedf = scaler.fit_transform(np.array(closedf).reshape(-1, 1))
-    print(closedf.shape)
+    logger.debug(f'Close dataframe shape: {closedf.shape}')
 
     # my_bar.progress(20 + 1, text='Scaled the dataset -> Splitting it into subsamples')
     # we keep the training set as 60% and 40% testing set
@@ -201,18 +204,18 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     del closedf['Date'], train_data['Date'], test_data['Date']  # TO BE ADDED TO PY FILE!!!
     train_data = scaler.fit_transform(train_data)
     test_data = scaler.transform(test_data)
-    print("train_data: ", train_data.shape)
-    print("test_data: ", test_data.shape)
+    logger.info(f"train_data shape: {train_data.shape}")
+    logger.info(f"test_data shape: {test_data.shape}")
 
     # my_bar.progress(30 + 1, text='Split it into subsamples -> Cutting them into observations')
 
     X_train, y_train = create_dataset(train_data, time_step_backward, time_step_forward)
     X_test, y_test = create_dataset(test_data, time_step_backward, time_step_forward)
 
-    print("X_train: ", X_train.shape)
-    print("y_train: ", y_train.shape)
-    print("X_test: ", X_test.shape)
-    print("y_test", y_test.shape)
+    logger.info(f"X_train shape: {X_train.shape}")
+    logger.info(f"y_train shape: {y_train.shape}")
+    logger.info(f"X_test shape: {X_test.shape}")
+    logger.info(f"y_test shape: {y_test.shape}")
 
     # reshape input to be [samples, time steps, features] which is required for LSTM
     X_train_gmdh = X_train.copy()
@@ -220,8 +223,8 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
     X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
 
-    print("X_train: ", X_train.shape)
-    print("X_test: ", X_test.shape)
+    logger.info(f"X_train reshaped: {X_train.shape}")
+    logger.info(f"X_test reshaped: {X_test.shape}")
 
     # my_bar.progress(40 + 1, text='Cut it into observations -> Training the model')
     model = Sequential()
@@ -249,7 +252,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
                                 suppress_warnings=True,
                                 stepwise=True)
     # st.text(arima_model.summary())
-    print(arima_model.summary())
+    logger.info(f"ARIMA model summary:\n{arima_model.summary()}")
 
     if GMDH:
         model_gmdh1 = GMDHs[GMDH_algo1]
@@ -265,7 +268,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
                            criterion=Criterion(criterion_type=criterions[criterion1]),
                            k_best=k_best1, polynomial_type=polynoms[polynom1])
         # st.write(f"GMDH model: {model_gmdh.get_best_polynomial()}")
-        print(f"GMDH model 1: {model_gmdh1.get_best_polynomial()}")
+        logger.info(f"GMDH model 1: {model_gmdh1.get_best_polynomial()}")
 
         model_gmdh2 = GMDHs[GMDH_algo2]
         if GMDH_algo2 == 'Combi':
@@ -280,7 +283,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
                            criterion=Criterion(criterion_type=criterions[criterion2]),
                            k_best=k_best2, polynomial_type=polynoms[polynom1])
         # st.write(f"GMDH model: {model_gmdh.get_best_polynomial()}")
-        print(f"GMDH model 2: {model_gmdh2.get_best_polynomial()}")
+        logger.info(f"GMDH model 2: {model_gmdh2.get_best_polynomial()}")
     """
     if transformer:
         X_train_context = torch.tensor(X_train_gmdh)
@@ -347,7 +350,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     metrics_tmp["Train data MSE"] = mean_squared_error(original_ytrain, train_predict)
     metrics_tmp["Train data MAE"] = mean_absolute_error(original_ytrain, train_predict)
     metrics_tmp["Train data MAPE"] = mean_absolute_percentage_error(original_ytrain, train_predict)
-    print("-------------------------------------------------------------------------------------")
+    logger.debug("-------------------------------------------------------------------------------------")
     metrics_tmp["Test data RMSE"] = math.sqrt(mean_squared_error(original_ytest, test_predict))
     metrics_tmp["Test data MSE"] = mean_squared_error(original_ytest, test_predict)
     metrics_tmp["Test data MAE"] = mean_absolute_error(original_ytest, test_predict)
@@ -355,7 +358,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     metrics_tmp["Train data R2 score"] = r2_score(original_ytrain, train_predict)
     metrics_tmp["Test data R2 score"] = r2_score(original_ytest, test_predict)
     for metric in metrics_tmp:
-        print(metric, ': ', metrics_tmp[metric])
+        logger.debug(f"{metric}: {metrics_tmp[metric]}")
         metrics1['LSTM'].append(metrics_tmp[metric])
 
     metrics1['SARIMA'] = []
@@ -363,7 +366,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     metrics_tmp["Train data MSE"] = mean_squared_error(original_ytrain, train_predict_arima)
     metrics_tmp["Train data MAE"] = mean_absolute_error(original_ytrain, train_predict_arima)
     metrics_tmp["Train data MAPE"] = mean_absolute_percentage_error(original_ytrain, train_predict_arima)
-    print("-------------------------------------------------------------------------------------")
+    logger.debug("-------------------------------------------------------------------------------------")
     metrics_tmp["Test data RMSE"] = math.sqrt(mean_squared_error(original_ytest, test_predict_arima))
     metrics_tmp["Test data MSE"] = mean_squared_error(original_ytest, test_predict_arima)
     metrics_tmp["Test data MAE"] = mean_absolute_error(original_ytest, test_predict_arima)
@@ -371,7 +374,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     metrics_tmp["Train data R2 score"] = r2_score(original_ytrain, train_predict_arima)
     metrics_tmp["Test data R2 score"] = r2_score(original_ytest, test_predict_arima)
     for metric in metrics_tmp:
-        print(metric, ': ', metrics_tmp[metric])
+        logger.debug(f"{metric}: {metrics_tmp[metric]}")
         metrics1['SARIMA'].append(metrics_tmp[metric])
     if GMDH:
         metrics1['GMDH_1'] = []
@@ -379,7 +382,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
         metrics_tmp["Train data MSE"] = mean_squared_error(original_ytrain, train_predict_gmdh1)
         metrics_tmp["Train data MAE"] = mean_absolute_error(original_ytrain, train_predict_gmdh1)
         metrics_tmp["Train data MAPE"] = mean_absolute_percentage_error(original_ytrain, train_predict_gmdh1)
-        print("-------------------------------------------------------------------------------------")
+        logger.debug("-------------------------------------------------------------------------------------")
         metrics_tmp["Test data RMSE"] = math.sqrt(mean_squared_error(original_ytest, test_predict_gmdh1))
         metrics_tmp["Test data MSE"] = mean_squared_error(original_ytest, test_predict_gmdh1)
         metrics_tmp["Test data MAE"] = mean_absolute_error(original_ytest, test_predict_gmdh1)
@@ -387,7 +390,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
         metrics_tmp["Train data R2 score"] = r2_score(original_ytrain, train_predict_gmdh1)
         metrics_tmp["Test data R2 score"] = r2_score(original_ytest, test_predict_gmdh1)
         for metric in metrics_tmp:
-            print(metric, ': ', metrics_tmp[metric])
+            logger.debug(f"{metric}: {metrics_tmp[metric]}")
             metrics1['GMDH_1'].append(metrics_tmp[metric])
 
         metrics1['GMDH_2'] = []
@@ -395,7 +398,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
         metrics_tmp["Train data MSE"] = mean_squared_error(original_ytrain, train_predict_gmdh2)
         metrics_tmp["Train data MAE"] = mean_absolute_error(original_ytrain, train_predict_gmdh2)
         metrics_tmp["Train data MAPE"] = mean_absolute_percentage_error(original_ytrain, train_predict_gmdh2)
-        print("-------------------------------------------------------------------------------------")
+        logger.debug("-------------------------------------------------------------------------------------")
         metrics_tmp["Test data RMSE"] = math.sqrt(mean_squared_error(original_ytest, test_predict_gmdh2))
         metrics_tmp["Test data MSE"] = mean_squared_error(original_ytest, test_predict_gmdh2)
         metrics_tmp["Test data MAE"] = mean_absolute_error(original_ytest, test_predict_gmdh2)
@@ -403,7 +406,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
         metrics_tmp["Train data R2 score"] = r2_score(original_ytrain, train_predict_gmdh2)
         metrics_tmp["Test data R2 score"] = r2_score(original_ytest, test_predict_gmdh2)
         for metric in metrics_tmp:
-            print(metric, ': ', metrics_tmp[metric])
+            logger.debug(f"{metric}: {metrics_tmp[metric]}")
             metrics1['GMDH_2'].append(metrics_tmp[metric])
 
     if transformer:
@@ -412,7 +415,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
         metrics_tmp["Train data MSE"] = mean_squared_error(original_ytrain, X_train_forecast_median)
         metrics_tmp["Train data MAE"] = mean_absolute_error(original_ytrain, X_train_forecast_median)
         metrics_tmp["Train data MAPE"] = mean_absolute_percentage_error(original_ytrain, X_train_forecast_median)
-        print("-------------------------------------------------------------------------------------")
+        logger.debug("-------------------------------------------------------------------------------------")
         metrics_tmp["Test data RMSE"] = math.sqrt(mean_squared_error(original_ytest, X_test_forecast_median))
         metrics_tmp["Test data MSE"] = mean_squared_error(original_ytest, X_test_forecast_median)
         metrics_tmp["Test data MAE"] = mean_absolute_error(original_ytest, X_test_forecast_median)
@@ -420,14 +423,14 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
         metrics_tmp["Train data R2 score"] = r2_score(original_ytrain, X_train_forecast_median)
         metrics_tmp["Test data R2 score"] = r2_score(original_ytest, X_test_forecast_median)
         for metric in metrics_tmp:
-            print(metric, ': ', metrics_tmp[metric])
+            logger.debug(f"{metric}: {metrics_tmp[metric]}")
             metrics1['Transformer'].append(metrics_tmp[metric])
 
     metrics_df = pd.DataFrame.from_dict(metrics1, orient='columns')  # (metrics, columns = ['LSTM', 'GMDH'])
     metrics_df.index = metrics_tmp.keys()
     # st.write(metrics_df)
     metrics_df.round(3)
-    print(metrics_df)
+    logger.info(f"Metrics DataFrame:\n{metrics_df}")
     # my_bar.progress(90 + 1, text='Calculated performance metrics -> Plotting predictions')
 
     # shift train predictions for plotting
@@ -436,64 +439,62 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     trainPredictPlot_arima = np.empty_like(closedf)
     trainPredictPlot_arima[:, :] = np.nan
     trainPredictPlot_arima[lag:len(train_predict_arima) + lag, :] = train_predict_arima
-    print(trainPredictPlot_arima[lag:len(train_predict_arima) + lag, :].shape, train_predict_arima.shape)
-    print("Train predicted data: ", trainPredictPlot_arima.shape)
+    logger.debug(f"Train predict plot ARIMA shape: {trainPredictPlot_arima[lag:len(train_predict_arima) + lag, :].shape}, train_predict_arima shape: {train_predict_arima.shape}")
+    logger.debug(f"Train predicted data: {trainPredictPlot_arima.shape}")
 
     # shift test predictions for plotting
     testPredictPlot_arima = np.empty_like(closedf)
     testPredictPlot_arima[:, :] = np.nan
     testPredictPlot_arima[len(train_predict_arima) + (lag * 2):len(closedf), :] = test_predict_arima
-    print(testPredictPlot_arima[len(train_predict_arima) + (lag * 2):len(closedf), :].shape, test_predict_arima.shape)
-    print("Test predicted data: ", testPredictPlot_arima.shape)
+    logger.debug(f"Test predict plot ARIMA shape: {testPredictPlot_arima[len(train_predict_arima) + (lag * 2):len(closedf), :].shape}, test_predict_arima shape: {test_predict_arima.shape}")
+    logger.debug(f"Test predicted data: {testPredictPlot_arima.shape}")
 
     # lag = time_step_backward + (time_step_forward - 1)
     trainPredictPlot = np.empty_like(closedf)
     trainPredictPlot[:, :] = np.nan
     trainPredictPlot[lag:len(train_predict) + lag, :] = train_predict
-    print(trainPredictPlot[lag:len(train_predict) + lag, :].shape, train_predict.shape)
-    print("Train predicted data: ", trainPredictPlot.shape)
+    logger.debug(f"Train predict plot LSTM shape: {trainPredictPlot[lag:len(train_predict) + lag, :].shape}, train_predict shape: {train_predict.shape}")
+    logger.debug(f"Train predicted data: {trainPredictPlot.shape}")
 
     # shift test predictions for plotting
     testPredictPlot = np.empty_like(closedf)
     testPredictPlot[:, :] = np.nan
     testPredictPlot[len(train_predict) + (lag * 2):len(closedf), :] = test_predict
-    print(testPredictPlot[len(train_predict) + (lag * 2):len(closedf), :].shape, test_predict.shape)
-    print("Test predicted data: ", testPredictPlot.shape)
+    logger.debug(f"Test predict plot LSTM shape: {testPredictPlot[len(train_predict) + (lag * 2):len(closedf), :].shape}, test_predict shape: {test_predict.shape}")
+    logger.debug(f"Test predicted data: {testPredictPlot.shape}")
 
     if GMDH:
         trainPredictPlot_gmdh1 = np.empty_like(closedf)
         trainPredictPlot_gmdh1[:, :] = np.nan
         trainPredictPlot_gmdh1[lag:len(train_predict_gmdh1) + lag, :] = train_predict_gmdh1
-        print(trainPredictPlot_gmdh1[lag:len(train_predict_gmdh1) + lag, :].shape, train_predict_gmdh1.shape)
+        logger.debug(f"Train predict plot GMDH1 shape: {trainPredictPlot_gmdh1[lag:len(train_predict_gmdh1) + lag, :].shape}, train_predict_gmdh1 shape: {train_predict_gmdh1.shape}")
 
         testPredictPlot_gmdh1 = np.empty_like(closedf)
         testPredictPlot_gmdh1[:, :] = np.nan
         testPredictPlot_gmdh1[len(train_predict_gmdh1) + (lag * 2):len(closedf), :] = test_predict_gmdh1
-        print(testPredictPlot_gmdh1[len(train_predict_gmdh1) + (lag * 2):len(closedf), :].shape, test_predict_gmdh1.shape)
+        logger.debug(f"Test predict plot GMDH1 shape: {testPredictPlot_gmdh1[len(train_predict_gmdh1) + (lag * 2):len(closedf), :].shape}, test_predict_gmdh1 shape: {test_predict_gmdh1.shape}")
 
 
         trainPredictPlot_gmdh2 = np.empty_like(closedf)
         trainPredictPlot_gmdh2[:, :] = np.nan
         trainPredictPlot_gmdh2[lag:len(train_predict_gmdh2) + lag, :] = train_predict_gmdh2
-        print(trainPredictPlot_gmdh2[lag:len(train_predict_gmdh2) + lag, :].shape, train_predict_gmdh2.shape)
+        logger.debug(f"Train predict plot GMDH2 shape: {trainPredictPlot_gmdh2[lag:len(train_predict_gmdh2) + lag, :].shape}, train_predict_gmdh2 shape: {train_predict_gmdh2.shape}")
 
         testPredictPlot_gmdh2 = np.empty_like(closedf)
         testPredictPlot_gmdh2[:, :] = np.nan
         testPredictPlot_gmdh2[len(train_predict_gmdh2) + (lag * 2):len(closedf), :] = test_predict_gmdh2
-        print(testPredictPlot_gmdh2[len(train_predict_gmdh2) + (lag * 2):len(closedf), :].shape, test_predict_gmdh2.shape)
+        logger.debug(f"Test predict plot GMDH2 shape: {testPredictPlot_gmdh2[len(train_predict_gmdh2) + (lag * 2):len(closedf), :].shape}, test_predict_gmdh2 shape: {test_predict_gmdh2.shape}")
 
     if transformer:
         trainPredictPlot_transformer = np.empty_like(closedf)
         trainPredictPlot_transformer[:, :] = np.nan
         trainPredictPlot_transformer[lag:len(X_train_forecast_median) + lag, :] = X_train_forecast_median
-        print(trainPredictPlot_transformer[lag:len(X_train_forecast_median) + lag, :].shape,
-              X_train_forecast_median.shape)
+        logger.debug(f"Train predict plot Transformer shape: {trainPredictPlot_transformer[lag:len(X_train_forecast_median) + lag, :].shape}, X_train_forecast_median shape: {X_train_forecast_median.shape}")
 
         testPredictPlot_transformer = np.empty_like(closedf)
         testPredictPlot_transformer[:, :] = np.nan
         testPredictPlot_transformer[len(X_train_forecast_median) + (lag * 2):len(closedf), :] = X_test_forecast_median
-        print(testPredictPlot_transformer[len(X_train_forecast_median) + (lag * 2):len(closedf), :].shape,
-              X_test_forecast_median.shape)
+        logger.debug(f"Test predict plot Transformer shape: {testPredictPlot_transformer[len(X_train_forecast_median) + (lag * 2):len(closedf), :].shape}, X_test_forecast_median shape: {X_test_forecast_median.shape}")
 
     if GMDH:
         if transformer:
