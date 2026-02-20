@@ -29,6 +29,9 @@ import pmdarima as pm
 from pages.utils.utils import create_dataset, make_prediction, make_prediction_recursive
 
 from io import StringIO
+import os
+os.environ["YF_DISABLE_CURL_CFFI"] = "1"
+
 
 st.set_page_config(
     page_title="Model optimization",
@@ -61,16 +64,22 @@ period_cut = {'1d': '2022-02-19', '5d': '2020-06-19', '1wk': '2020-06-19', '1mo'
 uploaded_file = st.file_uploader("Choose a file")
 
 
-#try:
-maindf = yf.download(tickers = f"{ticker}-USD",  # list of tickers
-            period = int_to_periods[interval],         # time period
-            interval = interval,       # trading interval
-            prepost = False,       # download pre/post market hours data?
-            repair = True,)         # repair obvious price errors e.g. 100x?
-if len(maindf) == 0:
-    raise FileNotFoundError
-#except:
-#    maindf = pd.read_csv(f'{ticker}.csv')
+try:
+    maindf = yf.download(tickers = f"{ticker}-USD",  # list of tickers
+                period = int_to_periods[interval],         # time period
+                interval = interval,       # trading interval
+                prepost = False,       # download pre/post market hours data?
+                repair = True,)         # repair obvious price errors e.g. 100x?
+    if len(maindf) == 0:
+        raise FileNotFoundError(f"No data downloaded for {ticker}-USD")
+except Exception as e:
+    st.error(f"Failed to download data from yfinance: {e}")
+    st.info(f"Attempting to load from local file: {ticker}.csv")
+    try:
+        maindf = pd.read_csv(f'{ticker}.csv')
+    except FileNotFoundError:
+        st.error(f"Local file {ticker}.csv not found. Please upload a file or check the ticker symbol.")
+        st.stop()
 
 if uploaded_file is not None:
     # To read file as bytes:
@@ -196,7 +205,9 @@ if GMDH:
     polynom = expander1.selectbox("Вид базовых полиномов", options = polynoms.keys())
 
 
-y_overall.columns = y_overall.columns.droplevel(1)#.droplevel()
+# Check if columns have MultiIndex before dropping level
+if isinstance(y_overall.columns, pd.MultiIndex):
+    y_overall.columns = y_overall.columns.droplevel(1)
 #y_overall = y_overall.reset_index()
 
 

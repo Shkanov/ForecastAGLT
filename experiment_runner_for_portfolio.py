@@ -125,6 +125,9 @@ class DataLoader():
             self.actual_prices_test.append(actual_test)
 
         self.selected_features = [self.valid_tickers[0]]
+        if not self.valid_tickers:
+            raise ValueError("No valid tickers downloaded from Yahoo Finance")
+
         #correlation_threshold = 0.9
         for idx, feature in enumerate(self.valid_tickers):
             if idx == 0:
