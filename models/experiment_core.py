@@ -29,6 +29,9 @@ import torch
 
 # Local imports
 from pages.utils.utils import create_dataset, make_prediction
+from logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def load_crypto_data(ticker: str, interval: str = '1d') -> pd.DataFrame:
@@ -51,23 +54,80 @@ def load_crypto_data(ticker: str, interval: str = '1d') -> pd.DataFrame:
         '1wk': '10y', '1mo': '10y', '3mo': '10y'
     }
 
+    import os
+
     try:
+        logger.info(f"Attempting to download data for {ticker}-USD from yfinance...")
         maindf = yf.download(
             tickers=f"{ticker}-USD",
-            period='max',  # int_to_periods[interval],
+            period='max',
             interval=interval,
             prepost=False,
-            repair=True
+            repair=True,
+            progress=False
         )
-        if len(maindf) == 0:
-            raise FileNotFoundError(f"No data downloaded for {ticker}-USD")
-    except Exception as e:
-        # Fallback to local CSV file
-        maindf = pd.read_csv(f'{ticker}.csv')
 
-    # Reset index and ensure Date column is datetime
+        if len(maindf) == 0:
+            raise ValueError(f"No data downloaded for {ticker}-USD with interval {interval}")
+
+        logger.info(f"Successfully downloaded {len(maindf)} rows for {ticker}-USD")
+
+    except (FileNotFoundError, ValueError, ConnectionError) as e:
+        # Try fallback to local CSV file
+        csv_path = f'{ticker}.csv'
+        logger.warning(f"Failed to download from yfinance: {e}. Attempting local file: {csv_path}")
+
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(
+                f"Could not download data for {ticker}-USD and local file {csv_path} not found. "
+                f"Error from yfinance: {e}"
+            )
+
+        try:
+            maindf = pd.read_csv(csv_path)
+            logger.info(f"Successfully loaded {len(maindf)} rows from {csv_path}")
+        except Exception as csv_error:
+            raise FileNotFoundError(
+                f"Failed to read local CSV {csv_path}: {csv_error}"
+            )
+
+    # Validate data structure
+    if not isinstance(maindf, pd.DataFrame):
+        raise TypeError(f"Expected DataFrame, got {type(maindf)}")
+
+    if maindf.empty:
+        raise ValueError(f"Loaded data for {ticker} is empty")
+
+    # Reset index and ensure Date column exists
     maindf = maindf.reset_index()
-    maindf['Date'] = pd.to_datetime(maindf['Date'], format='%Y-%m-%d')
+
+    # Check if 'Date' column exists (might be 'date', 'Datetime', etc.)
+    date_columns = [col for col in maindf.columns if 'date' in col.lower()]
+    if not date_columns:
+        raise ValueError(
+            f"No date column found in data for {ticker}. "
+            f"Available columns: {list(maindf.columns)}"
+        )
+
+    # Rename to standard 'Date' if needed
+    if 'Date' not in maindf.columns and date_columns:
+        maindf = maindf.rename(columns={date_columns[0]: 'Date'})
+        logger.info(f"Renamed column '{date_columns[0]}' to 'Date'")
+
+    # Ensure Date column is datetime
+    try:
+        maindf['Date'] = pd.to_datetime(maindf['Date'])
+    except Exception as e:
+        raise ValueError(f"Failed to convert Date column to datetime: {e}")
+
+    # Validate required columns exist
+    required_columns = ['Date', 'Close']
+    missing_columns = [col for col in required_columns if col not in maindf.columns]
+    if missing_columns:
+        raise ValueError(
+            f"Missing required columns {missing_columns} for {ticker}. "
+            f"Available: {list(maindf.columns)}"
+        )
 
     return maindf
 
@@ -437,11 +497,45 @@ def create_plot_dataframe(
         # Create empty arrays for plotting
         trainPredictPlot = np.empty(closedf_shape)
         trainPredictPlot[:, :] = np.nan
-        trainPredictPlot[lag:len(train_pred) + lag, :] = train_pred
+
+        # Validate train predictions shape matches expected range
+        train_start_idx = lag
+        train_end_idx = len(train_pred) + lag
+        if train_end_idx > closedf_shape[0]:
+            logger.warning(
+                f"Train predictions for {model_name} exceed data size. "
+                f"Expected max {closedf_shape[0]}, got {train_end_idx}. Truncating."
+            )
+            train_end_idx = closedf_shape[0]
+            train_pred = train_pred[:train_end_idx - train_start_idx]
+
+        if train_pred.shape[0] > 0:
+            trainPredictPlot[train_start_idx:train_end_idx, :] = train_pred
 
         testPredictPlot = np.empty(closedf_shape)
         testPredictPlot[:, :] = np.nan
-        testPredictPlot[len(train_pred) + (lag * 2):closedf_shape[0], :] = test_pred
+
+        # Validate test predictions shape matches expected range
+        test_start_idx = len(train_pred) + (lag * 2)
+        test_end_idx = closedf_shape[0]
+        expected_test_len = test_end_idx - test_start_idx
+
+        if test_pred.shape[0] != expected_test_len:
+            logger.warning(
+                f"Test predictions for {model_name} shape mismatch. "
+                f"Expected {expected_test_len}, got {test_pred.shape[0]}. "
+                f"Adjusting..."
+            )
+            if test_pred.shape[0] > expected_test_len:
+                # Truncate if too long
+                test_pred = test_pred[:expected_test_len]
+            else:
+                # Pad with NaN if too short
+                padding = np.full((expected_test_len - test_pred.shape[0], 1), np.nan)
+                test_pred = np.vstack([test_pred, padding])
+
+        if test_start_idx < closedf_shape[0] and test_pred.shape[0] > 0:
+            testPredictPlot[test_start_idx:test_end_idx, :] = test_pred
 
         # Convert model name to column-friendly format
         model_suffix = model_name.lower().replace(' ', '_')
