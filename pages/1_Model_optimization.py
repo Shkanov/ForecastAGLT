@@ -1,32 +1,16 @@
 import pandas as pd
 import numpy as np
-import math
 
-# For Evalution we will use these library
-
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+# For data preprocessing
 from sklearn.preprocessing import MinMaxScaler
 
-# For model building we will use these library
-
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.layers import LSTM
-from tensorflow.keras import initializers
-from tensorflow.keras.callbacks import EarlyStopping
-
-# For PLotting we will use these library
+# For plotting
 import matplotlib.pyplot as plt
-
-import yfinance as yf
 
 import streamlit as st
 
 from gmdh import CriterionType, Criterion, Multi, Combi, Mia, Ria, PolynomialType
-from chronos import ChronosPipeline
-import torch
-import pmdarima as pm
-from pages.utils.utils import create_dataset, make_prediction, make_prediction_recursive
+from pages.utils.utils import make_prediction_recursive
 
 from models.experiment_core import (
     load_crypto_data,
@@ -122,6 +106,7 @@ ax.set_title(f'Динамика цены закрытия для {ticker}')
 
 #st.image(fig)
 st.pyplot(fig)
+plt.close(fig)  # Explicitly close to prevent memory leaks
 #fig.show()
 
 
@@ -269,6 +254,7 @@ if train:
     ax.set_title('Потери на обучении и валидации')
     #ax.set_ylim[0, 0.2]
     st.pyplot(fig)
+    plt.close(fig)  # Explicitly close to prevent memory leaks
 
     my_bar.progress(80 + 1, text='Calculated loss -> Making predictions')
 
@@ -324,7 +310,7 @@ if train:
     ax.legend()
     ax.set_title("Сравнение исходных и смоделированных цен")
     st.pyplot(fig)
-
+    plt.close(fig)  # Explicitly close to prevent memory leaks
 
     my_bar.progress(100, text='Done')
 
@@ -345,44 +331,6 @@ if train:
                                                                scaler=scaler_for_recursive, pred_days=pred_days,
                                                                time_step_backward=time_step_backward)
 
-        """
-        x_input = test_data[len(test_data) - time_step_backward:].reshape(1, -1)
-        temp_input = list(x_input)
-        temp_input = temp_input[0].tolist()
-
-
-        lst_output = []
-        n_steps = time_step_backward
-        i = 0
-        while (i < pred_days):
-
-            if (len(temp_input) > time_step_backward):
-
-                x_input = np.array(temp_input[1:])
-                # print("{} day input {}".format(i,x_input))
-                x_input = x_input.reshape(1, -1)
-                x_input = x_input.reshape((1, n_steps, 1))
-
-                yhat = model.predict(x_input, verbose=0)
-                # print("{} day output {}".format(i,yhat))
-                temp_input.extend(yhat[0].tolist())
-                temp_input = temp_input[1:]
-                # print(temp_input)
-
-                lst_output.extend(yhat.tolist())
-                i = i + 1
-
-            else:
-
-                x_input = x_input.reshape((1, n_steps, 1))
-                yhat = model.predict(x_input, verbose=0)
-                temp_input.extend(yhat[0].tolist())
-
-                lst_output.extend(yhat.tolist())
-                i = i + 1
-
-        logger.debug(f"Output of predicted next steps: {len(lst_output)}")
-        """
         last_days = np.arange(1, time_step_backward + 1)
         day_pred = np.arange(time_step_backward + 1, time_step_backward + pred_days + 1)
         logger.debug(f"Last days: {last_days}")
@@ -390,12 +338,7 @@ if train:
 
         temp_mat = np.empty((len(last_days) + pred_days, 1))
         temp_mat[:] = np.nan
-        """
-        last_original_days_value = temp_mat.copy()
-        next_predicted_days_value = temp_mat.copy()
-        last_original_days_value[0:time_step_backward] = closedf[len(closedf) - time_step_backward:].values
-        next_predicted_days_value[time_step_backward:] = scaler.inverse_transform(np.array(lst_output))
-        """
+
         last_original_days_value = temp_mat.copy()
         next_predicted_days_value_arima = temp_mat.copy()
         next_predicted_days_value_lstm = temp_mat.copy()
@@ -413,21 +356,6 @@ if train:
         if transformer:
             next_predicted_days_value_transformer[time_step_backward:] = lst_output_transformer
 
-        """
-        new_pred_plot = pd.DataFrame({
-            'last_original_days_value': last_original_days_value.reshape(1, -1).tolist()[0],
-            'next_predicted_days_value': next_predicted_days_value.reshape(1, -1).tolist()[0]
-        })
-        
-
-
-        fig, ax = plt.subplots()
-        ax.plot(new_pred_plot.index, new_pred_plot['last_original_days_value'], label=f"Последние {time_step_backward} шагов цены закратия")
-        ax.plot(new_pred_plot.index, new_pred_plot['next_predicted_days_value'], label=f"Предсказанные следующие {pred_days} шагов цены закрытия")
-        ax.legend()
-        ax.set_title(f"Сравнения последних {time_step_backward} шагов и следующих {pred_days} шагов")
-        st.pyplot(fig)
-        """
         if GMDH:
             if transformer:
                 new_pred_plot = pd.DataFrame({
@@ -477,6 +405,7 @@ if train:
         ax.set_title(f"Сравнения последних {time_step_backward} шагов и следующих {pred_days} шагов")
         ax.set_ylim(0, closedf_for_recursive['Close'].max() * 1.5)
         st.pyplot(fig)
+        plt.close(fig)  # Explicitly close to prevent memory leaks
         #ax.plot()
 
 
