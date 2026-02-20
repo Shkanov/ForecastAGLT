@@ -151,24 +151,38 @@ class DataLoader():
         if not self.valid_tickers:
             raise ValueError("No valid tickers downloaded from Yahoo Finance")
 
+        # Build merged dataframes separately to avoid corrupting loop data
+        merged_train_predictions = self.train_predictions_df_list[0].copy()
+        merged_actual_train = self.actual_prices_train[0].copy()
+        merged_test_predictions = self.test_predictions_df_list[0].copy()
+        merged_actual_test = self.actual_prices_test[0].copy()
+
         #correlation_threshold = 0.9
         for idx, feature in enumerate(self.valid_tickers):
             if idx == 0:
                 continue
             logger.debug(f"Processing feature {idx}: {feature}")
-            tmp = self.train_predictions_df_list[0].merge(self.train_predictions_df_list[idx], on='date', how='inner')
-            # Вычисляем корреляцию нового признака с уже выбранными
+
+            # Check correlation with already selected features
+            tmp = merged_train_predictions.merge(self.train_predictions_df_list[idx], on='date', how='inner')
             correlations = [abs(tmp[feature].corr(tmp[sel_feature])) for sel_feature in self.selected_features]
             logger.debug(f"Correlations: {correlations}")
             max_correlation = max(correlations)
 
-            # Добавляем признак, если максимальная корреляция не превышает порог
+            # Add feature if correlation is below threshold
             if max_correlation < self.correlation_threshold:
                 self.selected_features.append(feature)
-                self.train_predictions_df_list[0] = self.train_predictions_df_list[0].merge(self.train_predictions_df_list[idx], on='date', how='inner')
-                self.actual_prices_train[0] = self.actual_prices_train[0].merge(self.actual_prices_train[idx], on='date', how='inner')
-                self.test_predictions_df_list[0] = self.test_predictions_df_list[0].merge(self.test_predictions_df_list[idx], on='date', how='inner')
-                self.actual_prices_test[0] = self.actual_prices_test[0].merge(self.actual_prices_test[idx], on='date', how='inner')
+                merged_train_predictions = merged_train_predictions.merge(self.train_predictions_df_list[idx], on='date', how='inner')
+                merged_actual_train = merged_actual_train.merge(self.actual_prices_train[idx], on='date', how='inner')
+                merged_test_predictions = merged_test_predictions.merge(self.test_predictions_df_list[idx], on='date', how='inner')
+                merged_actual_test = merged_actual_test.merge(self.actual_prices_test[idx], on='date', how='inner')
+
+        # Update the original lists with merged dataframes
+        self.train_predictions_df_list[0] = merged_train_predictions
+        self.actual_prices_train[0] = merged_actual_train
+        self.test_predictions_df_list[0] = merged_test_predictions
+        self.actual_prices_test[0] = merged_actual_test
+
         logger.info(f"Selected features: {self.selected_features}")
 
         selected_features_and_date = ['date'] + self.selected_features
@@ -255,7 +269,19 @@ class Portfolio():
 
     # Calculate accuracy metrics for validation and test sets
     def calculate_accuracy(self, predicted, realized):
-        return np.mean(np.abs(np.array(predicted) - np.array(realized))) / np.mean(realized)
+        """Calculate normalized mean absolute error (NMAE).
+
+        Returns NMAE if mean of realized is non-zero, otherwise returns MAE.
+        """
+        mae = np.mean(np.abs(np.array(predicted) - np.array(realized)))
+        mean_realized = np.mean(realized)
+
+        # Avoid division by zero or near-zero values
+        if abs(mean_realized) < 1e-10:
+            logger.warning(f"Mean realized value too close to zero ({mean_realized}), returning MAE instead of normalized error")
+            return mae
+
+        return mae / abs(mean_realized)
 
 
     # Calculate Sharpe ratio deviation

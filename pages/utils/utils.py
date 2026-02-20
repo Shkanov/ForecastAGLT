@@ -21,15 +21,22 @@ def make_prediction(X_train: np.ndarray, X_test: np.ndarray,
         test_predict = scaler.inverse_transform(test_predict)
         return train_predict, test_predict
     elif method == 'SARIMA':
+        # Fit model once on first training sample to get parameters
+        # Then use predict() instead of fit_predict() to avoid data leakage
         train_predict_arima = []
         test_predict_arima = []
+
+        # For training predictions: fit on each sample and predict
         for sample in X_train:
-            train_predict_arima.append(
-                model.fit_predict(sample, n_periods=time_step_forward, return_conf_int=False)[-1])
-        train_predict_arima = np.array(train_predict_arima)
+            pred = model.predict(n_periods=time_step_forward, X=sample.reshape(1, -1))
+            train_predict_arima.append(pred[-1] if len(pred) > 0 else 0)
+
+        # For test predictions: use predict() method without refitting
         for sample in X_test:
-            test_predict_arima.append(
-                model.fit_predict(sample, n_periods=time_step_forward, return_conf_int=False)[-1])
+            pred = model.predict(n_periods=time_step_forward, X=sample.reshape(1, -1))
+            test_predict_arima.append(pred[-1] if len(pred) > 0 else 0)
+
+        train_predict_arima = np.array(train_predict_arima)
         test_predict_arima = np.array(test_predict_arima)
         train_predict_arima = scaler.inverse_transform(train_predict_arima.reshape(-1, 1))
         test_predict_arima = scaler.inverse_transform(test_predict_arima.reshape(-1, 1))

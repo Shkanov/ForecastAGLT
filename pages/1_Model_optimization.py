@@ -236,9 +236,18 @@ if train:
 
     training_size = int(len(closedf) * 0.70)
     test_size = len(closedf) - training_size
-    if test_size <= time_step_backward + time_step_forward:
-        st.error("Test size is too small. Test_size must be greater than time_step_backward + time_step_forward")
+    min_required_size = 2 * (time_step_backward + time_step_forward)
+
+    # Validate both train and test sizes
+    if training_size < time_step_backward + time_step_forward:
+        st.error(f"❌ Training size ({training_size}) is too small. Need at least {time_step_backward + time_step_forward} samples. "
+                f"Try reducing 'Количество шагов назад' or using more data.")
         st.stop()
+    if test_size <= min_required_size:
+        st.error(f"❌ Test size ({test_size}) is too small. Need at least {min_required_size} samples. "
+                f"Try reducing 'Количество шагов назад' or 'Количество шагов вперед'.")
+        st.stop()
+
     train_data, test_data = closedf[0:training_size], closedf[training_size:len(closedf)]
     train_data = scaler.fit_transform(train_data)
     test_data = scaler.transform(test_data)
