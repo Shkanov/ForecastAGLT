@@ -28,6 +28,18 @@ import torch
 import pmdarima as pm
 from pages.utils.utils import create_dataset, make_prediction, make_prediction_recursive
 
+from models.experiment_core import (
+    load_crypto_data,
+    preprocess_data,
+    prepare_train_test_data,
+    train_lstm,
+    train_sarima,
+    get_chronos_pipeline,
+    make_all_predictions,
+    calculate_all_metrics,
+    create_plot_dataframe
+)
+
 from io import StringIO
 import os
 os.environ["YF_DISABLE_CURL_CFFI"] = "1"
@@ -40,15 +52,8 @@ st.set_page_config(
     page_title="Model optimization",
     page_icon="📈")
 
-@st.cache_data
-def get_pipeline():
-    pipeline = ChronosPipeline.from_pretrained(
-        "amazon/chronos-t5-tiny",
-        device_map="cpu",  # use "cpu" for CPU inference and "mps" for Apple Silicon
-        torch_dtype=torch.bfloat16)
-    return pipeline
-
-pipeline = get_pipeline()
+# Use the shared pipeline function
+pipeline = get_chronos_pipeline(cache=True)
 seed = 42
 st.title("Daily price prediction")
 tickers = ['BTC', 'ETH', 'BNB', #'USDC',
@@ -66,24 +71,7 @@ period_cut = {'1d': '2022-02-19', '5d': '2020-06-19', '1wk': '2020-06-19', '1mo'
 
 uploaded_file = st.file_uploader("Choose a file")
 
-
-try:
-    maindf = yf.download(tickers = f"{ticker}-USD",  # list of tickers
-                period = int_to_periods[interval],         # time period
-                interval = interval,       # trading interval
-                prepost = False,       # download pre/post market hours data?
-                repair = True,)         # repair obvious price errors e.g. 100x?
-    if len(maindf) == 0:
-        raise FileNotFoundError(f"No data downloaded for {ticker}-USD")
-except Exception as e:
-    st.error(f"Failed to download data from yfinance: {e}")
-    st.info(f"Attempting to load from local file: {ticker}.csv")
-    try:
-        maindf = pd.read_csv(f'{ticker}.csv')
-    except FileNotFoundError:
-        st.error(f"Local file {ticker}.csv not found. Please upload a file or check the ticker symbol.")
-        st.stop()
-
+# Load data using shared function or from uploaded file
 if uploaded_file is not None:
     # To read file as bytes:
     bytes_data = uploaded_file.getvalue()
@@ -94,14 +82,13 @@ if uploaded_file is not None:
 
     # Can be used wherever a "file-like" object is accepted:
     maindf = pd.read_csv(uploaded_file)
+    maindf = maindf.reset_index() if 'Date' not in maindf.columns else maindf
+    maindf['Date'] = pd.to_datetime(maindf['Date'], format='%Y-%m-%d')
     st.write(maindf.head())
+else:
+    # Use shared data loading function
+    maindf = load_crypto_data(ticker, interval)
 
-
-
-maindf=maindf.reset_index()
-maindf['Date'] = pd.to_datetime(maindf['Date'], format='%Y-%m-%d')
-
-#maindf = pd.read_csv('BTC-USD.csv')
 logger.info(f'Total number of days present in the dataset: {maindf.shape[0]}')
 logger.info(f'Total number of fields present in the dataset: {maindf.shape[1]}')
 logger.debug(f'Dataset head:\n{maindf.head()}')
@@ -116,42 +103,13 @@ scale_step_type_list = ['D','W','M','Y']
 scale_step_type = scaling_expander.selectbox('Шаг масштабирования', scale_step_type_list)
 num_scale_steps = scaling_expander.slider('Размер шага масштабирования', 1, 100, 1)
 
-y_overall = y_overall[['Date','Close']]
+# Use shared preprocessing function
 if num_scale_steps > 1:
     scaling_strategy = scaling_expander.selectbox('Метод масштабирования', scaling_strategy_list)
-    scaling_step_combined = str(num_scale_steps) + scale_step_type
-    # Определяем сегодняшнюю дату
-    today = pd.Timestamp.now().normalize()
-    if scaling_strategy == 'average':
-        # y_overall = y_overall.groupby(pd.Grouper(key = 'Date', freq = scaling_step_combined)).mean()
-        # Добавляем колонку для конца интервала
-        y_overall['Interval_End'] = today - (
-                (today - y_overall['Date']) // pd.Timedelta(scaling_step_combined)) * pd.Timedelta(
-            scaling_step_combined)
-        # Группируем по интервалам и считаем среднее
-        y_overall = y_overall.groupby('Interval_End')['Close'].mean().reset_index()
-        # Сортируем результат
-        y_overall = y_overall.sort_values('Interval_End')  # .reset_index(drop=True)
-        y_overall = y_overall.rename({'Interval_End': 'Date'}, axis=1)
-    elif scaling_strategy == 'median':
-        # y_overall = y_overall.groupby(pd.Grouper(key = 'Date', freq = scaling_step_combined)).median()
-        # y_overall = y_overall.groupby(pd.Grouper(key = 'Date', freq = scaling_step_combined)).mean()
-        # Добавляем колонку для конца интервала
-        y_overall['Interval_End'] = today - (
-                (today - y_overall['Date']) // pd.Timedelta(scaling_step_combined)) * pd.Timedelta(
-            scaling_step_combined)
-        # Группируем по интервалам и считаем среднее
-        y_overall = y_overall.groupby('Interval_End')['Close'].median().reset_index()
-        # Сортируем результат
-        y_overall = y_overall.sort_values('Interval_End')  # .reset_index(drop=True)
-        y_overall = y_overall.rename({'Interval_End': 'Date'}, axis=1)
-    else:
-        # y_overall = y_overall.resample(on = 'Date', rule = scaling_step_combined).last()
-        # Устанавливаем 'Date' как индекс, если это ещё не сделано
-        # y_overall = y_overall.set_index('Date')
-        # y_overall.columns = y_overall.columns.droplevel(1)
-        y_overall = y_overall.resample(on='Date', rule=scaling_step_combined, origin='end').last()
-        y_overall = y_overall.reset_index()
+else:
+    scaling_strategy = 'median'  # Default, won't be used when num_scale_steps=1
+
+y_overall = preprocess_data(y_overall, num_scale_steps, scaling_strategy, scale_step_type)
 
 
 #names = cycle(['Stock Open Price','Stock Close Price','Stock High Price','Stock Low Price'])
@@ -215,87 +173,62 @@ if isinstance(y_overall.columns, pd.MultiIndex):
 
 
 if train:
-    my_bar = st.progress(0, text='Model training progress. Truncating the dataset now')
-    # Lets First Take all the Close Price
-    closedf = y_overall[['Date', 'Close']]#maindf[['Date', 'Close']]
+    my_bar = st.progress(0, text='Model training progress. Preparing data')
+    # Prepare data using shared function
+    closedf = y_overall[['Date', 'Close']].dropna()
     logger.info(f"Shape of close dataframe: {closedf.shape}")
-    closedf = closedf[-1000:]#closedf[closedf['Date'] > period_cut[interval]]
-    close_stock = closedf.copy()
-    logger.info(f"Total data for prediction: {closedf.shape[0]}")
-    my_bar.progress(10 + 1, text='Truncated the dataset -> Scaling it')
-    # deleting date column and normalizing using MinMax Scaler
 
+    my_bar.progress(10 + 1, text='Prepared data -> Splitting and scaling')
 
-    del closedf['Date']
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    #closedf = scaler.fit_transform(np.array(closedf).reshape(-1, 1))
-    logger.debug(f'Close dataframe shape: {closedf.shape}')
-
-    my_bar.progress(20 + 1, text='Scaled the dataset -> Splitting it into subsamples')
-    # we keep the training set as 60% and 40% testing set
-
-    training_size = int(len(closedf) * 0.70)
-    test_size = len(closedf) - training_size
-    min_required_size = 2 * (time_step_backward + time_step_forward)
-
-    # Validate both train and test sizes
-    if training_size < time_step_backward + time_step_forward:
-        st.error(f"❌ Training size ({training_size}) is too small. Need at least {time_step_backward + time_step_forward} samples. "
-                f"Try reducing 'Количество шагов назад' or using more data.")
-        st.stop()
-    if test_size <= min_required_size:
-        st.error(f"❌ Test size ({test_size}) is too small. Need at least {min_required_size} samples. "
-                f"Try reducing 'Количество шагов назад' or 'Количество шагов вперед'.")
-        st.stop()
-
-    train_data, test_data = closedf[0:training_size], closedf[training_size:len(closedf)]
-    train_data = scaler.fit_transform(train_data)
-    test_data = scaler.transform(test_data)
-    logger.info(f"train_data shape: {train_data.shape}")
-    logger.info(f"test_data shape: {test_data.shape}")
-
-    my_bar.progress(30 + 1, text='Split it into subsamples -> Cutting them into observations')
-
-    X_train, y_train = create_dataset(train_data, time_step_backward, time_step_forward)
-    X_test, y_test = create_dataset(test_data, time_step_backward, time_step_forward)
+    X_train, y_train, X_test, y_test, scaler, close_stock, train_date_range = prepare_train_test_data(
+        closedf,
+        time_step_backward=time_step_backward,
+        time_step_forward=time_step_forward,
+        train_ratio=0.70,
+        max_samples=1000
+    )
 
     logger.info(f"X_train shape: {X_train.shape}")
     logger.info(f"y_train shape: {y_train.shape}")
     logger.info(f"X_test shape: {X_test.shape}")
     logger.info(f"y_test shape: {y_test.shape}")
 
-    # reshape input to be [samples, time steps, features] which is required for LSTM
+    my_bar.progress(30 + 1, text='Data prepared -> Reshaping for models')
+
+    # Keep GMDH copy before reshaping for LSTM
     X_train_gmdh = X_train.copy()
     X_test_gmdh = X_test.copy()
-    X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
-    X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
 
-    logger.info(f"X_train reshaped: {X_train.shape}")
-    logger.info(f"X_test reshaped: {X_test.shape}")
+    # Get scaled data for recursive predictions
+    closedf_for_recursive = close_stock[['Close']].iloc[-1000:]
+    scaler_for_recursive = MinMaxScaler(feature_range=(0, 1))
+    training_size = int(len(closedf_for_recursive) * 0.70)
+    train_data = scaler_for_recursive.fit_transform(closedf_for_recursive[:training_size])
+    test_data = scaler_for_recursive.transform(closedf_for_recursive[training_size:])
 
-    my_bar.progress(40 + 1, text='Cut it into observations -> Training the model')
-    model = Sequential()
-    model.add(LSTM(10, input_shape=(None, 1), activation="relu",
-                   kernel_initializer = initializers.GlorotNormal(seed = seed), bias_initializer = initializers.GlorotNormal(seed = seed)))
-    model.add(Dense(1,
-                   kernel_initializer = initializers.GlorotNormal(seed = seed), bias_initializer = initializers.GlorotNormal(seed = seed)))
-    model.compile(loss="mean_squared_error", optimizer="adam")
-    callback = EarlyStopping(monitor='loss', patience=30, restore_best_weights = True)
-    history = model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=100, batch_size=32, verbose=10,
-                        callbacks = [callback])
+    my_bar.progress(40 + 1, text='Data prepared -> Training LSTM model')
 
-    arima_model = pm.auto_arima(train_data,
-                          m=12,  # frequency of series
-                          seasonal=True,  # TRUE if seasonal series
-                          d=None,  # let model determine 'd'
-                          test='adf',  # use adftest to find optimal 'd'
-                          start_p=0, start_q=0,  # minimum p and q
-                          max_p=time_step_backward, max_q=time_step_backward,  # maximum p and q
-                          D=None,  # let model determine 'D'
-                          trace=True,
-                          error_action='ignore',
-                          suppress_warnings=True,
-                          stepwise=True)
+    # Train LSTM using shared function
+    lstm_model, history = train_lstm(
+        X_train, y_train, X_test, y_test,
+        seed=seed,
+        lstm_units=10,
+        epochs=100,
+        batch_size=32,
+        patience=30,
+        verbose=False
+    )
+
+    my_bar.progress(55 + 1, text='Trained LSTM -> Training SARIMA model')
+
+    # Train SARIMA using shared function
+    arima_model = train_sarima(
+        train_data,
+        time_step_backward=time_step_backward,
+        seasonal=True,
+        m=12,
+        trace=True
+    )
     st.text(arima_model.summary())
 
     if GMDH:
@@ -314,7 +247,14 @@ if train:
         st.write(f"GMDH model: {model_gmdh.get_best_polynomial()}")
 
 
-    my_bar.progress(70 + 1, text='Trained model -> Calculating loss')
+    # Build models dictionary
+    models_dict = {'LSTM': lstm_model, 'SARIMA': arima_model}
+    if GMDH:
+        models_dict['GMDH'] = model_gmdh
+    if transformer:
+        models_dict['Transformer'] = pipeline
+
+    my_bar.progress(70 + 1, text='Trained models -> Calculating loss')
     import matplotlib.pyplot as plt
 
     loss = history.history['loss']
@@ -330,98 +270,24 @@ if train:
     #ax.set_ylim[0, 0.2]
     st.pyplot(fig)
 
-    my_bar.progress(80 + 1, text='Calculated loss -> Scoring the dataset')
+    my_bar.progress(80 + 1, text='Calculated loss -> Making predictions')
 
+    # Make predictions using shared function
+    predictions = make_all_predictions(
+        X_train=X_train.reshape(X_train.shape[0], X_train.shape[1], 1),
+        X_test=X_test.reshape(X_test.shape[0], X_test.shape[1], 1),
+        X_train_gmdh=X_train_gmdh,
+        X_test_gmdh=X_test_gmdh,
+        models=models_dict,
+        scaler=scaler,
+        time_step_forward=time_step_forward,
+        include_transformer=transformer
+    )
 
-    original_ytrain = scaler.inverse_transform(y_train.reshape(-1, 1))
-    original_ytest = scaler.inverse_transform(y_test.reshape(-1, 1))
+    my_bar.progress(85 + 1, text='Made predictions -> Calculating performance metrics')
 
-    train_predict, test_predict = make_prediction(X_train, X_test, method='LSTM', model=model,
-                    scaler=scaler, time_step_forward=time_step_forward)
-    train_predict_arima, test_predict_arima = make_prediction(X_train, X_test, method='SARIMA', model=arima_model,
-                    scaler=scaler, time_step_forward=time_step_forward)
-    if GMDH:
-        train_predict_gmdh, test_predict_gmdh = make_prediction(X_train_gmdh, X_test_gmdh, method='GMDH', model=model_gmdh,
-                        scaler=scaler, time_step_forward=time_step_forward)
-    if transformer:
-        X_train_forecast_median, X_test_forecast_median = make_prediction(X_train_gmdh, X_test_gmdh, method='Transformer', model=pipeline,
-                        scaler=scaler, time_step_forward=time_step_forward)
-
-    my_bar.progress(85 + 1, text='Scored the dataset -> Calculating perfomance metrics')
-
-    # Evaluation metrices RMSE and MAE
-    metrics_tmp = {}
-    metrics1 = {}
-    metrics1['LSTM'] = []
-    #metrics1['Transformer'] = []
-    metrics_tmp["Train data RMSE"] = math.sqrt(mean_squared_error(original_ytrain, train_predict))
-    metrics_tmp["Train data MSE"] = mean_squared_error(original_ytrain, train_predict)
-    metrics_tmp["Train data MAE"] =  mean_absolute_error(original_ytrain, train_predict)
-    logger.debug("-------------------------------------------------------------------------------------")
-    metrics_tmp["Test data RMSE"] =  math.sqrt(mean_squared_error(original_ytest, test_predict))
-    metrics_tmp["Test data MSE"] =  mean_squared_error(original_ytest, test_predict)
-    metrics_tmp["Test data MAE"] =  mean_absolute_error(original_ytest, test_predict)
-    #metrics_tmp["Train data explained variance regression score"] = explained_variance_score(original_ytrain, train_predict)
-    #metrics_tmp["Test data explained variance regression score"] = explained_variance_score(original_ytest, test_predict)
-    metrics_tmp["Train data R2 score"] =  r2_score(original_ytrain, train_predict)
-    metrics_tmp["Test data R2 score"] =  r2_score(original_ytest, test_predict)
-    for metric in metrics_tmp:
-        logger.debug(f"{metric}: {metrics_tmp[metric]}")
-        metrics1['LSTM'].append(metrics_tmp[metric])
-
-
-    metrics1['SARIMA'] = []
-    # metrics1['Transformer'] = []
-    metrics_tmp["Train data RMSE"] = math.sqrt(mean_squared_error(original_ytrain, train_predict_arima))
-    metrics_tmp["Train data MSE"] = mean_squared_error(original_ytrain, train_predict_arima)
-    metrics_tmp["Train data MAE"] = mean_absolute_error(original_ytrain, train_predict_arima)
-    logger.debug("-------------------------------------------------------------------------------------")
-    metrics_tmp["Test data RMSE"] = math.sqrt(mean_squared_error(original_ytest, test_predict_arima))
-    metrics_tmp["Test data MSE"] = mean_squared_error(original_ytest, test_predict_arima)
-    metrics_tmp["Test data MAE"] = mean_absolute_error(original_ytest, test_predict_arima)
-    # metrics_tmp["Train data explained variance regression score"] = explained_variance_score(original_ytrain, train_predict)
-    # metrics_tmp["Test data explained variance regression score"] = explained_variance_score(original_ytest, test_predict)
-    metrics_tmp["Train data R2 score"] = r2_score(original_ytrain, train_predict_arima)
-    metrics_tmp["Test data R2 score"] = r2_score(original_ytest, test_predict_arima)
-    for metric in metrics_tmp:
-        logger.debug(f"{metric}: {metrics_tmp[metric]}")
-        metrics1['SARIMA'].append(metrics_tmp[metric])
-    if GMDH:
-        metrics1['GMDH'] = []
-        metrics_tmp["Train data RMSE"] = math.sqrt(mean_squared_error(original_ytrain, train_predict_gmdh))
-        metrics_tmp["Train data MSE"] = mean_squared_error(original_ytrain, train_predict_gmdh)
-        metrics_tmp["Train data MAE"] =  mean_absolute_error(original_ytrain, train_predict_gmdh)
-        logger.debug("-------------------------------------------------------------------------------------")
-        metrics_tmp["Test data RMSE"] =  math.sqrt(mean_squared_error(original_ytest, test_predict_gmdh))
-        metrics_tmp["Test data MSE"] =  mean_squared_error(original_ytest, test_predict_gmdh)
-        metrics_tmp["Test data MAE"] =  mean_absolute_error(original_ytest, test_predict_gmdh)
-        #metrics_tmp["Train data explained variance regression score"] = explained_variance_score(original_ytrain, train_predict)
-        #metrics_tmp["Test data explained variance regression score"] = explained_variance_score(original_ytest, test_predict)
-        metrics_tmp["Train data R2 score"] =  r2_score(original_ytrain, train_predict_gmdh)
-        metrics_tmp["Test data R2 score"] =  r2_score(original_ytest, test_predict_gmdh)
-        for metric in metrics_tmp:
-            logger.debug(f"{metric}: {metrics_tmp[metric]}")
-            metrics1['GMDH'].append(metrics_tmp[metric])
-
-    if transformer:
-        metrics1['Transformer'] = []
-        metrics_tmp["Train data RMSE"] = math.sqrt(mean_squared_error(original_ytrain, X_train_forecast_median))
-        metrics_tmp["Train data MSE"] = mean_squared_error(original_ytrain, X_train_forecast_median)
-        metrics_tmp["Train data MAE"] = mean_absolute_error(original_ytrain, X_train_forecast_median)
-        logger.debug("-------------------------------------------------------------------------------------")
-        metrics_tmp["Test data RMSE"] = math.sqrt(mean_squared_error(original_ytest, X_test_forecast_median))
-        metrics_tmp["Test data MSE"] = mean_squared_error(original_ytest, X_test_forecast_median)
-        metrics_tmp["Test data MAE"] = mean_absolute_error(original_ytest, X_test_forecast_median)
-        # metrics_tmp["Train data explained variance regression score"] = explained_variance_score(original_ytrain, train_predict)
-        # metrics_tmp["Test data explained variance regression score"] = explained_variance_score(original_ytest, test_predict)
-        metrics_tmp["Train data R2 score"] = r2_score(original_ytrain, X_train_forecast_median)
-        metrics_tmp["Test data R2 score"] = r2_score(original_ytest, X_test_forecast_median)
-        for metric in metrics_tmp:
-            logger.debug(f"{metric}: {metrics_tmp[metric]}")
-            metrics1['Transformer'].append(metrics_tmp[metric])
-
-    metrics_df = pd.DataFrame.from_dict(metrics1, orient = 'columns')#(metrics, columns = ['LSTM', 'GMDH'])
-    metrics_df.index = metrics_tmp.keys()
+    # Calculate metrics using shared function
+    metrics_df = calculate_all_metrics(y_train, y_test, predictions, scaler)
     st.write(metrics_df)
     #print("Train data MGD: ", mean_gamma_deviance(original_ytrain, train_predict))
     #print("Test data MGD: ", mean_gamma_deviance(original_ytest, test_predict))
@@ -430,111 +296,31 @@ if train:
     #print("Test data MPD: ", mean_poisson_deviance(original_ytest, test_predict))
 
 
-    my_bar.progress(90 + 1, text='Calculated performance metrics -> Plotting predictions')
+    my_bar.progress(90 + 1, text='Calculated performance metrics -> Creating plot dataframe')
 
-    # shift train predictions for plotting
+    # Create plot dataframe using shared function
+    closedf_for_plot = close_stock[['Close']].iloc[-1000:]  # Match the max_samples used
+    plotdf = create_plot_dataframe(
+        close_stock=close_stock,
+        predictions=predictions,
+        closedf_shape=closedf_for_plot.shape,
+        time_step_backward=time_step_backward,
+        time_step_forward=time_step_forward
+    )
 
-    lag = time_step_backward + (time_step_forward - 1)
-    trainPredictPlot_arima = np.empty_like(closedf)
-    trainPredictPlot_arima[:, :] = np.nan
-    trainPredictPlot_arima[lag:len(train_predict_arima) + lag, :] = train_predict_arima
-    logger.debug(f"Train predict plot ARIMA shape: {trainPredictPlot_arima[lag:len(train_predict_arima) + lag, :].shape}, train_predict_arima shape: {train_predict_arima.shape}")
-    logger.debug(f"Train predicted data: {trainPredictPlot_arima.shape}")
-
-    # shift test predictions for plotting
-    testPredictPlot_arima = np.empty_like(closedf)
-    testPredictPlot_arima[:, :] = np.nan
-    testPredictPlot_arima[len(train_predict_arima) + (lag * 2):len(closedf), :] = test_predict_arima
-    logger.debug(f"Test predict plot ARIMA shape: {testPredictPlot_arima[len(train_predict_arima) + (lag * 2):len(closedf), :].shape}, test_predict_arima shape: {test_predict_arima.shape}")
-    logger.debug(f"Test predicted data: {testPredictPlot_arima.shape}")
-
-
-
-    trainPredictPlot = np.empty_like(closedf)
-    trainPredictPlot[:, :] = np.nan
-    trainPredictPlot[lag:len(train_predict) + lag, :] = train_predict
-    logger.debug(f"Train predict plot LSTM shape: {trainPredictPlot[lag:len(train_predict) + lag, :].shape}, train_predict shape: {train_predict.shape}")
-    logger.debug(f"Train predicted data: {trainPredictPlot.shape}")
-
-    # shift test predictions for plotting
-    testPredictPlot = np.empty_like(closedf)
-    testPredictPlot[:, :] = np.nan
-    testPredictPlot[len(train_predict) + (lag * 2):len(closedf), :] = test_predict
-    logger.debug(f"Test predict plot LSTM shape: {testPredictPlot[len(train_predict) + (lag * 2):len(closedf), :].shape}, test_predict shape: {test_predict.shape}")
-    logger.debug(f"Test predicted data: {testPredictPlot.shape}")
-
-    if GMDH:
-        trainPredictPlot_gmdh = np.empty_like(closedf)
-        trainPredictPlot_gmdh[:, :] = np.nan
-        trainPredictPlot_gmdh[lag:len(train_predict_gmdh) + lag, :] = train_predict_gmdh
-        logger.debug(f"Train predict plot GMDH shape: {trainPredictPlot_gmdh[lag:len(train_predict_gmdh) + lag, :].shape}, train_predict_gmdh shape: {train_predict_gmdh.shape}")
-
-        testPredictPlot_gmdh = np.empty_like(closedf)
-        testPredictPlot_gmdh[:, :] = np.nan
-        testPredictPlot_gmdh[len(train_predict_gmdh) + (lag * 2):len(closedf), :] = test_predict_gmdh
-        logger.debug(f"Test predict plot GMDH shape: {testPredictPlot_gmdh[len(train_predict_gmdh) + (lag * 2):len(closedf), :].shape}, test_predict_gmdh shape: {test_predict_gmdh.shape}")
-
-    if transformer:
-        trainPredictPlot_transformer = np.empty_like(closedf)
-        trainPredictPlot_transformer[:, :] = np.nan
-        trainPredictPlot_transformer[lag:len(X_train_forecast_median) + lag, :] = X_train_forecast_median
-        logger.debug(f"Train predict plot Transformer shape: {trainPredictPlot_transformer[lag:len(X_train_forecast_median) + lag, :].shape}, X_train_forecast_median shape: {X_train_forecast_median.shape}")
-
-        testPredictPlot_transformer = np.empty_like(closedf)
-        testPredictPlot_transformer[:, :] = np.nan
-        testPredictPlot_transformer[len(X_train_forecast_median) + (lag * 2):len(closedf), :] = X_test_forecast_median
-        logger.debug(f"Test predict plot Transformer shape: {testPredictPlot_transformer[len(X_train_forecast_median) + (lag * 2):len(closedf), :].shape}, X_test_forecast_median shape: {X_test_forecast_median.shape}")
-
-    if GMDH:
-        if transformer:
-            plotdf = pd.DataFrame({'date': close_stock['Date'],
-                                   'original_close': close_stock['Close'],
-                                   'train_predicted_close_arima': trainPredictPlot_arima.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close_arima': testPredictPlot_arima.reshape(1, -1)[0].tolist(),
-                                   'train_predicted_close': trainPredictPlot.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close': testPredictPlot.reshape(1, -1)[0].tolist(),
-                                   'train_predicted_close_gmdh': trainPredictPlot_gmdh.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close_gmdh': testPredictPlot_gmdh.reshape(1, -1)[0].tolist(),
-                                   'train_predicted_close_transformer': trainPredictPlot_transformer.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close_transformer': testPredictPlot_transformer.reshape(1, -1)[0].tolist()})
-        elif not transformer:
-            plotdf = pd.DataFrame({'date': close_stock['Date'],
-                                   'original_close': close_stock['Close'],
-                                   'train_predicted_close_arima': trainPredictPlot_arima.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close_arima': testPredictPlot_arima.reshape(1, -1)[0].tolist(),
-                                   'train_predicted_close': trainPredictPlot.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close': testPredictPlot.reshape(1, -1)[0].tolist(),
-                                   'train_predicted_close_gmdh': trainPredictPlot_gmdh.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close_gmdh': testPredictPlot_gmdh.reshape(1, -1)[0].tolist()})
-    elif not GMDH:
-        if transformer:
-            plotdf = pd.DataFrame({'date': close_stock['Date'],
-                                   'original_close': close_stock['Close'],
-                                   'train_predicted_close_arima': trainPredictPlot_arima.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close_arima': testPredictPlot_arima.reshape(1, -1)[0].tolist(),
-                                   'train_predicted_close': trainPredictPlot.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close': testPredictPlot.reshape(1, -1)[0].tolist(),
-                                  'train_predicted_close_transformer': trainPredictPlot_transformer.reshape(1, -1)[0].tolist(),
-                                   'test_predicted_close_transformer': testPredictPlot_transformer.reshape(1, -1)[0].tolist()})
-        else:
-            plotdf = pd.DataFrame({'date': close_stock['Date'],
-                               'original_close': close_stock['Close'],
-                               'train_predicted_close_arima': trainPredictPlot_arima.reshape(1, -1)[0].tolist(),
-                               'test_predicted_close_arima': testPredictPlot_arima.reshape(1, -1)[0].tolist(),
-                               'train_predicted_close': trainPredictPlot.reshape(1, -1)[0].tolist(),
-                               'test_predicted_close': testPredictPlot.reshape(1, -1)[0].tolist()})
+    # Create comparison plot
     fig, ax = plt.subplots()
     ax.plot(plotdf['date'], plotdf['original_close'], label='Оригинальная цена закрытия')
-    ax.plot(plotdf['date'], plotdf['train_predicted_close_arima'], label='Предсказанная цена закрытия на тренировке SARIMA')
-    ax.plot(plotdf['date'], plotdf['test_predicted_close_arima'], label='Предсказанная цена закрытия на тесте SARIMA')
-    ax.plot(plotdf['date'], plotdf['train_predicted_close'], label='Предсказанная цена закрытия на тренировке')
-    ax.plot(plotdf['date'], plotdf['test_predicted_close'], label='Предсказанная цена закрытия на тесте')
-    if GMDH:
-        ax.plot(plotdf['date'], plotdf['train_predicted_close_gmdh'], label='Предсказанная цена закрытия на тренировке GMDH')
-        ax.plot(plotdf['date'], plotdf['test_predicted_close_gmdh'], label='Предсказанная цена закрытия на тесте GMDH')
-    if transformer:
-        ax.plot(plotdf['date'], plotdf['train_predicted_close_transformer'], label='Предсказанная цена закрытия на тренировке Transformer')
-        ax.plot(plotdf['date'], plotdf['test_predicted_close_transformer'], label='Предсказанная цена закрытия на тесте Transformer')
+
+    # Plot predictions for each model
+    for model_name in predictions.keys():
+        model_suffix = model_name.lower().replace(' ', '_')
+        if f'train_predicted_close_{model_suffix}' in plotdf.columns:
+            ax.plot(plotdf['date'], plotdf[f'train_predicted_close_{model_suffix}'],
+                    label=f'Предсказанная цена закрытия на тренировке {model_name}')
+            ax.plot(plotdf['date'], plotdf[f'test_predicted_close_{model_suffix}'],
+                    label=f'Предсказанная цена закрытия на тесте {model_name}')
+
     ax.legend()
     ax.set_title("Сравнение исходных и смоделированных цен")
     st.pyplot(fig)
@@ -545,18 +331,18 @@ if train:
 
     if recursive_pred:
         lst_output_arima = make_prediction_recursive(test_data=test_data, method='SARIMA', model=arima_model,
-                                                     scaler=scaler, pred_days=pred_days,
+                                                     scaler=scaler_for_recursive, pred_days=pred_days,
                                                      time_step_backward=time_step_backward)
-        lst_output_lstm = make_prediction_recursive(test_data=test_data, method='LSTM', model=model,
-                                                    scaler=scaler, pred_days=pred_days,
+        lst_output_lstm = make_prediction_recursive(test_data=test_data, method='LSTM', model=lstm_model,
+                                                    scaler=scaler_for_recursive, pred_days=pred_days,
                                                     time_step_backward=time_step_backward)
         if GMDH:
             lst_output_gmdh = make_prediction_recursive(test_data=test_data, method='GMDH', model=model_gmdh,
-                                                        scaler=scaler, pred_days=pred_days,
+                                                        scaler=scaler_for_recursive, pred_days=pred_days,
                                                         time_step_backward=time_step_backward)
         if transformer:
             lst_output_transformer = make_prediction_recursive(test_data=test_data, method='Transformer', model=pipeline,
-                                                               scaler=scaler, pred_days=pred_days,
+                                                               scaler=scaler_for_recursive, pred_days=pred_days,
                                                                time_step_backward=time_step_backward)
 
         """
@@ -619,7 +405,7 @@ if train:
             next_predicted_days_value_transformer = temp_mat.copy()
 
         last_original_days_value[0:time_step_backward] = \
-            closedf[len(closedf) - time_step_backward:].values
+            closedf_for_recursive[len(closedf_for_recursive) - time_step_backward:].values
         next_predicted_days_value_arima[time_step_backward:] = lst_output_arima
         next_predicted_days_value_lstm[time_step_backward:] = lst_output_lstm
         if GMDH:
@@ -689,7 +475,7 @@ if train:
                     label=f"Предсказанные следующие {pred_days} шагов цены закрытия Transformer")
         ax.legend()
         ax.set_title(f"Сравнения последних {time_step_backward} шагов и следующих {pred_days} шагов")
-        ax.set_ylim(0, closedf['Close'].max() * 1.5)
+        ax.set_ylim(0, closedf_for_recursive['Close'].max() * 1.5)
         st.pyplot(fig)
         #ax.plot()
 
