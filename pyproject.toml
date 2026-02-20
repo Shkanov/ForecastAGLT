@@ -18,4 +18,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-chronos-forecasting = { git = "https://github.com/amazon-science/chronos-forecasting.git" }
+chronos-forecasting = { git = "https://github.com/amazon-science/chronos-forecasting.git", rev = "main" }

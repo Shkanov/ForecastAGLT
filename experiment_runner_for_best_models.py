@@ -196,7 +196,14 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
 
     training_size = int(len(closedf) * 0.70)
     test_size = len(closedf) - training_size
-    assert test_size > 2*(time_step_backward + time_step_forward), "Test_size is shorter than 2 x time_step_backward + time_step_forward"
+    min_required_size = 2 * (time_step_backward + time_step_forward)
+
+    # Validate both train and test sizes
+    if training_size < time_step_backward + time_step_forward:
+        raise ValueError(f"Training size ({training_size}) is too small. Need at least {time_step_backward + time_step_forward} samples.")
+    if test_size <= min_required_size:
+        raise ValueError(f"Test size ({test_size}) is too small. Need at least {min_required_size} samples.")
+
     train_data, test_data = closedf[0:training_size], closedf[training_size:len(closedf)]
     train_start_date, train_end_date = train_data['Date'].iloc[0], train_data['Date'].iloc[
         -1]  # TO BE ADDED TO PY FILE!!!
@@ -281,7 +288,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
         if GMDH_algo2 in ['Ria', 'Mia']:
             model_gmdh2.fit(X_train_gmdh, y_train, p_average=p_average2, limit=limit2, test_size=0.3,
                            criterion=Criterion(criterion_type=criterions[criterion2]),
-                           k_best=k_best2, polynomial_type=polynoms[polynom1])
+                           k_best=k_best2, polynomial_type=polynoms[polynom2])
         # st.write(f"GMDH model: {model_gmdh.get_best_polynomial()}")
         logger.info(f"GMDH model 2: {model_gmdh2.get_best_polynomial()}")
     """
