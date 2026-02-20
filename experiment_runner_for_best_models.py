@@ -68,6 +68,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     ax.plot(y_overall['Close'], label='Stock Close Price')
     ax.legend()
     ax.set_title(f'Динамика цены закрытия для {ticker}')
+    plt.close(fig)  # Close figure to prevent memory leak
 
     # Prepare train/test data
     closedf = y_overall[['Date', 'Close']].dropna()
@@ -162,6 +163,7 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     ax.legend()
     ax.set_title('Потери на обучении и валидации')
     ax.plot()
+    plt.close(fig)  # Close figure to prevent memory leak
 
     # Make predictions for all models
     logger.info("Generating predictions...")
@@ -206,5 +208,6 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
 
     ax.legend()
     ax.set_title("Сравнение исходных и смоделированных цен")
+    plt.close(fig)  # Close figure to prevent memory leak
 
     return plotdf, metrics_df, models_dict
