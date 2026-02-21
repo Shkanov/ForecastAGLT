@@ -30,11 +30,12 @@ import torch
 # Local imports
 from pages.utils.utils import create_dataset, make_prediction
 from logging_config import get_logger
+import config
 
 logger = get_logger(__name__)
 
 
-def load_crypto_data(ticker: str, interval: str = '1d') -> pd.DataFrame:
+def load_crypto_data(ticker: str, interval: str = config.DEFAULT_INTERVAL) -> pd.DataFrame:
     """
     Load cryptocurrency data from yfinance or fallback to local CSV file.
 
@@ -189,10 +190,10 @@ def preprocess_data(
 
 def prepare_train_test_data(
     closedf: pd.DataFrame,
-    time_step_backward: int,
-    time_step_forward: int = 1,
-    train_ratio: float = 0.70,
-    max_samples: int = 1000
+    time_step_backward: int = config.DEFAULT_TIME_STEP_BACKWARD,
+    time_step_forward: int = config.DEFAULT_TIME_STEP_FORWARD,
+    train_ratio: float = config.TRAIN_RATIO,
+    max_samples: int = config.MAX_SAMPLES
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, MinMaxScaler, pd.DataFrame, Tuple[pd.Timestamp, pd.Timestamp]]:
     """
     Prepare training and testing data with proper scaling and windowing.
@@ -261,12 +262,12 @@ def train_lstm(
     y_train: np.ndarray,
     X_test: np.ndarray,
     y_test: np.ndarray,
-    seed: int = 42,
-    lstm_units: int = 10,
-    epochs: int = 100,
-    batch_size: int = 32,
-    patience: int = 30,
-    verbose: bool = False
+    seed: int = config.RANDOM_SEED,
+    lstm_units: int = config.LSTM_CONFIG['units'],
+    epochs: int = config.LSTM_CONFIG['epochs'],
+    batch_size: int = config.LSTM_CONFIG['batch_size'],
+    patience: int = config.LSTM_CONFIG['patience'],
+    verbose: bool = config.LSTM_CONFIG['verbose']
 ) -> Tuple[Sequential, Any]:
     """
     Train an LSTM model for time series prediction.
@@ -286,46 +287,72 @@ def train_lstm(
     Returns:
         Tuple of (trained_model, training_history)
     """
+    # Validate input data
+    if X_train.size == 0 or y_train.size == 0:
+        raise ValueError("Training data is empty. Cannot train LSTM model.")
+
+    if X_test.size == 0 or y_test.size == 0:
+        raise ValueError("Test data is empty. Cannot train LSTM model.")
+
+    if np.any(np.isnan(X_train)) or np.any(np.isnan(y_train)):
+        raise ValueError("Training data contains NaN values. Please clean data before training.")
+
+    if np.any(np.isinf(X_train)) or np.any(np.isinf(y_train)):
+        raise ValueError("Training data contains infinite values. Please clean data before training.")
+
     # Reshape if needed (ensure 3D input for LSTM)
     if len(X_train.shape) == 2:
         X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
         X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
 
-    model = Sequential()
-    model.add(LSTM(
-        lstm_units,
-        input_shape=(None, 1),
-        activation="relu",
-        kernel_initializer=initializers.GlorotNormal(seed=seed),
-        bias_initializer=initializers.GlorotNormal(seed=seed)
-    ))
-    model.add(Dense(
-        1,
-        kernel_initializer=initializers.GlorotNormal(seed=seed),
-        bias_initializer=initializers.GlorotNormal(seed=seed)
-    ))
-    model.compile(loss="mean_squared_error", optimizer="adam")
+    try:
+        model = Sequential()
+        model.add(LSTM(
+            lstm_units,
+            input_shape=(None, 1),
+            activation="relu",
+            kernel_initializer=initializers.GlorotNormal(seed=seed),
+            bias_initializer=initializers.GlorotNormal(seed=seed)
+        ))
+        model.add(Dense(
+            1,
+            kernel_initializer=initializers.GlorotNormal(seed=seed),
+            bias_initializer=initializers.GlorotNormal(seed=seed)
+        ))
+        model.compile(loss="mean_squared_error", optimizer="adam")
 
-    callback = EarlyStopping(monitor='loss', patience=patience, restore_best_weights=True)
+        callback = EarlyStopping(monitor='loss', patience=patience, restore_best_weights=True)
 
-    history = model.fit(
-        X_train, y_train,
-        validation_data=(X_test, y_test),
-        epochs=epochs,
-        batch_size=batch_size,
-        verbose=10 if verbose else 0,
-        callbacks=[callback]
-    )
+        logger.info(f"Training LSTM with {X_train.shape[0]} samples...")
+        history = model.fit(
+            X_train, y_train,
+            validation_data=(X_test, y_test),
+            epochs=epochs,
+            batch_size=batch_size,
+            verbose=10 if verbose else 0,
+            callbacks=[callback]
+        )
+
+        # Check if training converged
+        final_loss = history.history['loss'][-1]
+        if np.isnan(final_loss) or np.isinf(final_loss):
+            raise ValueError(f"Training failed: final loss is {final_loss}")
+
+        logger.info(f"LSTM training completed. Final loss: {final_loss:.6f}")
+
+    except Exception as e:
+        logger.error(f"Error during LSTM training: {e}")
+        raise RuntimeError(f"Failed to train LSTM model: {e}") from e
 
     return model, history
 
 
 def train_sarima(
     train_data: np.ndarray,
-    time_step_backward: int,
-    seasonal: bool = True,
-    m: int = 12,
-    trace: bool = True
+    time_step_backward: int = config.DEFAULT_TIME_STEP_BACKWARD,
+    seasonal: bool = config.SARIMA_CONFIG['seasonal'],
+    m: int = config.SARIMA_CONFIG['m'],
+    trace: bool = config.SARIMA_CONFIG['trace']
 ) -> Any:
     """
     Train a SARIMA model using auto_arima for automatic parameter selection.
@@ -340,21 +367,45 @@ def train_sarima(
     Returns:
         Fitted SARIMA model
     """
-    arima_model = pm.auto_arima(
-        train_data,
-        m=m,
-        seasonal=seasonal,
-        d=None,  # let model determine 'd'
-        test='adf',  # use adftest to find optimal 'd'
-        start_p=0, start_q=0,
-        max_p=time_step_backward,
-        max_q=time_step_backward,
-        D=None,  # let model determine 'D'
-        trace=trace,
-        error_action='ignore',
-        suppress_warnings=True,
-        stepwise=True
-    )
+    # Validate input data
+    if train_data.size == 0:
+        raise ValueError("Training data is empty. Cannot train SARIMA model.")
+
+    if np.any(np.isnan(train_data)):
+        raise ValueError("Training data contains NaN values. Please clean data before training.")
+
+    if np.any(np.isinf(train_data)):
+        raise ValueError("Training data contains infinite values. Please clean data before training.")
+
+    if len(train_data) < 2 * m:
+        logger.warning(
+            f"Training data size ({len(train_data)}) is less than 2x seasonal period ({2*m}). "
+            f"SARIMA may not fit well."
+        )
+
+    try:
+        logger.info(f"Training SARIMA model with {len(train_data)} samples...")
+        arima_model = pm.auto_arima(
+            train_data,
+            m=m,
+            seasonal=seasonal,
+            d=None,  # let model determine 'd'
+            test='adf',  # use adftest to find optimal 'd'
+            start_p=0, start_q=0,
+            max_p=min(time_step_backward, len(train_data) // 2 - 1),  # Ensure max_p doesn't exceed data size
+            max_q=min(time_step_backward, len(train_data) // 2 - 1),
+            D=None,  # let model determine 'D'
+            trace=trace,
+            error_action='ignore',
+            suppress_warnings=True,
+            stepwise=True
+        )
+
+        logger.info(f"SARIMA model fitted: {arima_model.order}, seasonal: {arima_model.seasonal_order}")
+
+    except Exception as e:
+        logger.error(f"Error during SARIMA training: {e}")
+        raise RuntimeError(f"Failed to train SARIMA model: {e}") from e
 
     return arima_model
 
@@ -382,28 +433,53 @@ def train_gmdh_models(
     Returns:
         Dictionary of trained GMDH models keyed by model name
     """
+    # Validate input data
+    if X_train.size == 0 or y_train.size == 0:
+        raise ValueError("Training data is empty. Cannot train GMDH models.")
+
+    if np.any(np.isnan(X_train)) or np.any(np.isnan(y_train)):
+        raise ValueError("Training data contains NaN values. Please clean data before training.")
+
+    if 'algorithms' not in gmdh_params or not gmdh_params['algorithms']:
+        raise ValueError("No GMDH algorithms specified in gmdh_params")
+
     GMDHs = {'Combi': Combi(), 'Multi': Multi(), 'Mia': Mia(), 'Ria': Ria()}
     models = {}
 
     for model_name, params in gmdh_params.get('algorithms', {}).items():
-        algo_type = params['type']
-        model_gmdh = GMDHs[algo_type]
+        try:
+            algo_type = params.get('type')
+            if not algo_type or algo_type not in GMDHs:
+                logger.error(f"Invalid GMDH algorithm type '{algo_type}' for {model_name}")
+                continue
 
-        fit_kwargs = {
-            'p_average': params['p_average'],
-            'limit': params['limit'],
-            'test_size': 0.3,
-            'criterion': Criterion(criterion_type=params['criterion'])
-        }
+            logger.info(f"Training {model_name} ({algo_type}) with {X_train.shape[0]} samples...")
+            model_gmdh = GMDHs[algo_type]
 
-        if algo_type in ['Multi', 'Mia', 'Ria']:
-            fit_kwargs['k_best'] = params['k_best']
+            fit_kwargs = {
+                'p_average': params.get('p_average', 1),
+                'limit': params.get('limit', 0.0),
+                'test_size': 0.3,
+                'criterion': Criterion(criterion_type=params['criterion'])
+            }
 
-        if algo_type in ['Mia', 'Ria']:
-            fit_kwargs['polynomial_type'] = params['polynomial_type']
+            if algo_type in ['Multi', 'Mia', 'Ria']:
+                fit_kwargs['k_best'] = params.get('k_best', 1)
 
-        model_gmdh.fit(X_train, y_train, **fit_kwargs)
-        models[model_name] = model_gmdh
+            if algo_type in ['Mia', 'Ria']:
+                fit_kwargs['polynomial_type'] = params.get('polynomial_type')
+
+            model_gmdh.fit(X_train, y_train, **fit_kwargs)
+            models[model_name] = model_gmdh
+            logger.info(f"{model_name} training completed successfully")
+
+        except Exception as e:
+            logger.error(f"Error training {model_name}: {e}")
+            # Continue with other models even if one fails
+            continue
+
+    if not models:
+        raise RuntimeError("Failed to train any GMDH models")
 
     return models
 
