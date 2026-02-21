@@ -227,16 +227,23 @@ def prepare_train_test_data(
     test_size = len(data) - training_size
     min_required_size = 2 * (time_step_backward + time_step_forward)
 
-    # Validate sizes
+    # Validate sizes with actionable guidance
     if training_size < time_step_backward + time_step_forward:
         raise ValueError(
-            f"Training size ({training_size}) is too small. "
-            f"Need at least {time_step_backward + time_step_forward} samples."
+            f"Training data has {training_size} samples but {time_step_backward + time_step_forward} required "
+            f"({time_step_backward} lookback + {time_step_forward} forecast). "
+            f"Solutions: (1) Reduce time_step_backward (currently {time_step_backward}) or time_step_forward (currently {time_step_forward}), "
+            f"(2) Increase max_samples (currently {max_samples}), or (3) Get more historical data. "
+            f"Total available: {len(data)} samples."
         )
     if test_size <= min_required_size:
         raise ValueError(
-            f"Test size ({test_size}) is too small. "
-            f"Need at least {min_required_size} samples."
+            f"Test data has {test_size} samples but {min_required_size} required "
+            f"(2x window size for proper evaluation). "
+            f"Solutions: (1) Reduce time_step_backward (currently {time_step_backward}) or time_step_forward (currently {time_step_forward}), "
+            f"(2) Increase train_ratio to leave more test data (currently {train_ratio:.0%} for training), "
+            f"(3) Increase max_samples (currently {max_samples}), or (4) Get more historical data. "
+            f"Total available: {len(data)} samples."
         )
 
     train_data = data.iloc[0:training_size]
