@@ -86,21 +86,43 @@ class DataLoader():
         for invalid_ticker in self.invalid_tickers:
             self.valid_tickers.remove(invalid_ticker)
 
-        # Mapping for prediction columns
-        test_predictions_model_mapper = {
-            'SARIMA': 'test_predicted_close_arima',
-            'LSTM': 'test_predicted_close',
-            'GMDH_1': 'test_predicted_close_gmdh_1',
-            'GMDH_2': 'test_predicted_close_gmdh_2',
-            'Transformer': 'test_predicted_close_transformer'
-        }
-        train_predictions_model_mapper = {
-            'SARIMA': 'train_predicted_close_arima',
-            'LSTM': 'train_predicted_close',
-            'GMDH_1': 'train_predicted_close_gmdh_1',
-            'GMDH_2': 'train_predicted_close_gmdh_2',
-            'Transformer': 'train_predicted_close_transformer'
-        }
+        # Standard model name to column name mapping
+        # Model names come from metrics_df, column names from plot_df
+        def get_column_name(model_name: str, prefix: str) -> str:
+            """
+            Generate column name from model name.
+
+            Args:
+                model_name: Model name from metrics (e.g., 'SARIMA', 'LSTM', 'GMDH_1')
+                prefix: Either 'train_predicted_close' or 'test_predicted_close'
+
+            Returns:
+                Expected column name in plot_df
+            """
+            # Map model names to their column suffixes
+            suffix_map = {
+                'SARIMA': 'arima',
+                'LSTM': '',  # LSTM uses no suffix, just 'train_predicted_close'
+                'Transformer': 'transformer'
+            }
+
+            # Handle GMDH variants (GMDH, GMDH_1, GMDH_2, etc.)
+            if model_name.startswith('GMDH'):
+                if model_name == 'GMDH':
+                    suffix = 'gmdh'
+                else:
+                    # GMDH_1 -> gmdh_1, GMDH_2 -> gmdh_2
+                    suffix = model_name.lower()
+            else:
+                suffix = suffix_map.get(model_name, model_name.lower())
+
+            if suffix:
+                return f"{prefix}_{suffix}"
+            return prefix
+
+        # Create mappers (will be populated dynamically per ticker)
+        test_predictions_model_mapper = {}
+        train_predictions_model_mapper = {}
 
         # Determine global training and testing periods
         self.global_min_date = datetime(2000, 1, 1, 0, 0)
@@ -145,28 +167,30 @@ class DataLoader():
                 logger.error(f"'Test data MAPE' not found in metrics for {ticker}. Available metrics: {list(metrics_df.index)}")
                 continue
 
-            best_model = metrics_df.T.sort_values(by='Test data MAPE', ascending=True).index[0]
-            logger.info(f"Best model for {ticker}: {best_model}")
+            # Get model with lowest MAPE (best performance)
+            best_model = metrics_df.T['Test data MAPE'].idxmin()
+            logger.info(f"Best model for {ticker}: {best_model} (MAPE: {metrics_df.T.loc[best_model, 'Test data MAPE']:.4f})")
 
-            # Validate model exists in mapper
-            if best_model not in train_predictions_model_mapper:
-                logger.error(f"Best model {best_model} not found in train_predictions_model_mapper for {ticker}. Available: {list(train_predictions_model_mapper.keys())}")
-                continue
+            # Generate column names for this model
+            train_col = get_column_name(best_model, 'train_predicted_close')
+            test_col = get_column_name(best_model, 'test_predicted_close')
 
-            if best_model not in test_predictions_model_mapper:
-                logger.error(f"Best model {best_model} not found in test_predictions_model_mapper for {ticker}. Available: {list(test_predictions_model_mapper.keys())}")
-                continue
-
-            # Validate columns exist in plot_df
-            train_col = train_predictions_model_mapper[best_model]
-            test_col = test_predictions_model_mapper[best_model]
             plot_df = self.tickers_dict[ticker]['plot_df']
 
+            # Validate columns exist in plot_df
             required_cols = ['date', 'original_close', train_col, test_col]
             missing_cols = [col for col in required_cols if col not in plot_df.columns]
             if missing_cols:
-                logger.error(f"Missing columns {missing_cols} in plot_df for {ticker}. Skipping.")
+                logger.error(
+                    f"Missing columns {missing_cols} in plot_df for {ticker}. "
+                    f"Best model: {best_model}, expected columns: {train_col}, {test_col}. "
+                    f"Available columns: {[c for c in plot_df.columns if 'predicted' in c]}. Skipping."
+                )
                 continue
+
+            # Store mapping for reference
+            train_predictions_model_mapper[best_model] = train_col
+            test_predictions_model_mapper[best_model] = test_col
 
             # Extract predictions and actual prices
             train_predictions = plot_df[['date', train_col]].copy()
