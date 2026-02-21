@@ -1,3 +1,14 @@
+"""
+Portfolio optimization module.
+
+This module builds portfolios from individual asset predictions.
+It depends on experiment_runner_for_best_models to generate predictions
+for each ticker, then optimizes portfolio weights based on those predictions.
+
+Dependency Direction: portfolio -> best_models -> experiment_core
+This is a one-way dependency chain, not circular.
+"""
+
 import requests
 from experiment_runner_for_best_models import experiment
 from datetime import datetime
