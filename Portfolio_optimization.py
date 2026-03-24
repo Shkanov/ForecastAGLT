@@ -1,7 +1,6 @@
 import streamlit as st
 
 from experiment_runner_for_portfolio import DataLoader, Portfolio
-import pickle
 from sidebar_portfolio import sidebar
 
 
@@ -12,9 +11,10 @@ st.set_page_config(
 st.title("Portfolio Optimization")
 sidebar_dict = sidebar()
 run = st.sidebar.button('Run portfolio optimization')
-dataloader = DataLoader()
-portfolio = Portfolio()
+
 if run:
+    dataloader = DataLoader()
+    portfolio = Portfolio()
     st.header('Price Prediction Results')
     dataloader.experiment_data(top_n = sidebar_dict['top_n'], num_scale_steps = sidebar_dict['num_scale_steps'],
                                     scaling_strategy = sidebar_dict['scaling_strategy'], time_step_backward = sidebar_dict['time_step_backward'])

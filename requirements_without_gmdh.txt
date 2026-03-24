@@ -1,0 +1,9 @@
+git+https://github.com/amazon-science/chronos-forecasting.git
+pmdarima
+streamlit
+yfinance
+tqdm
+tensorflow
+matplotlib
+scipy
+requests
