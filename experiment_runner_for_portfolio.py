@@ -97,55 +97,24 @@ class DataLoader():
         for invalid_ticker in self.invalid_tickers:
             self.valid_tickers.remove(invalid_ticker)
 
-        # Standard model name to column name mapping
-        # Model names come from metrics_df, column names from plot_df
         def get_column_name(model_name: str, prefix: str) -> str:
-            """
-            Generate column name from model name.
-
-            Args:
-                model_name: Model name from metrics (e.g., 'SARIMA', 'LSTM', 'GMDH_1')
-                prefix: Either 'train_predicted_close' or 'test_predicted_close'
-
-            Returns:
-                Expected column name in plot_df
-            """
-            # Map model names to their column suffixes
-            suffix_map = {
-                'SARIMA': 'arima',
-                'LSTM': '',  # LSTM uses no suffix, just 'train_predicted_close'
-                'Transformer': 'transformer'
-            }
-
-            # Handle GMDH variants (GMDH, GMDH_1, GMDH_2, etc.)
-            if model_name.startswith('GMDH'):
-                if model_name == 'GMDH':
-                    suffix = 'gmdh'
-                else:
-                    # GMDH_1 -> gmdh_1, GMDH_2 -> gmdh_2
-                    suffix = model_name.lower()
-            else:
-                suffix = suffix_map.get(model_name, model_name.lower())
-
-            if suffix:
-                return f"{prefix}_{suffix}"
-            return prefix
-
-        # Create mappers (will be populated dynamically per ticker)
-        test_predictions_model_mapper = {}
-        train_predictions_model_mapper = {}
+            """Generate plot_df column name from model name using the same rule as create_plot_dataframe."""
+            suffix = model_name.lower().replace(' ', '_')
+            return f"{prefix}_{suffix}"
 
         # Determine global training and testing periods
         self.global_min_date = datetime(2000, 1, 1, 0, 0)
         self.global_max_date = datetime.now()
         for ticker in self.valid_tickers:
-            train_last_valid_index = self.tickers_dict[ticker]['plot_df']['train_predicted_close_arima'].last_valid_index()
-            train_last_date = self.tickers_dict[ticker]['plot_df'].loc[train_last_valid_index, 'date']
+            # Use SARIMA predictions (always present) to determine global date boundaries
+            plot_df = self.tickers_dict[ticker]['plot_df']
+            train_last_valid_index = plot_df['train_predicted_close_sarima'].last_valid_index()
+            train_last_date = plot_df.loc[train_last_valid_index, 'date']
             if train_last_date < self.global_max_date:
                 self.global_max_date = train_last_date
 
-            test_first_valid_index = self.tickers_dict[ticker]['plot_df']['test_predicted_close_arima'].first_valid_index()
-            test_first_date = self.tickers_dict[ticker]['plot_df'].loc[test_first_valid_index, 'date']
+            test_first_valid_index = plot_df['test_predicted_close_sarima'].first_valid_index()
+            test_first_date = plot_df.loc[test_first_valid_index, 'date']
             if test_first_date > self.global_min_date:
                 self.global_min_date = test_first_date
 
@@ -198,10 +167,6 @@ class DataLoader():
                     f"Available columns: {[c for c in plot_df.columns if 'predicted' in c]}. Skipping."
                 )
                 continue
-
-            # Store mapping for reference
-            train_predictions_model_mapper[best_model] = train_col
-            test_predictions_model_mapper[best_model] = test_col
 
             # Extract predictions and actual prices
             train_predictions = plot_df[['date', train_col]].copy()
@@ -362,9 +327,9 @@ class Portfolio():
         )
         return result.x
 
-    def process_period(self, data, actual_data, cov_matrix, target_return=None, allow_short=False):
+    def process_period(self, data, actual_data, cov_matrix, target_return=None, allow_short=False, training=True):
         """
-        Process a period for portfolio optimization.
+        Process a period for portfolio evaluation.
 
         Both 'data' and 'actual_data' contain log returns (output of preprocess_data).
 
@@ -374,40 +339,43 @@ class Portfolio():
             cov_matrix: Covariance matrix of returns
             target_return: Target return for optimization (optional)
             allow_short: Whether to allow short positions
+            training: If True, re-optimize weights at each step (validation mode).
+                      If False, use self.weights fixed from the last training step (test mode).
 
         Returns:
             Tuple of (predicted_returns, realized_returns, predicted_volatilities, realized_volatilities)
         """
-        # Forecast and optimize portfolio for each point T -> T+1 in validation and test data
         realized_returns = []
         predicted_returns = []
         realized_volatilities = []
         predicted_volatilities = []
 
         for i in range(len(data) - 1):
-            current_data = data.iloc[i:i + 2]  # Predicted prices for T and T+1
-            actual_current_data = actual_data.iloc[i:i + 2]  # Actual prices for T and T+1
+            current_data = data.iloc[i:i + 2]
+            actual_current_data = actual_data.iloc[i:i + 2]
 
-            # Validate data alignment
             if not current_data['date'].equals(actual_current_data['date']):
                 logger.warning(f"Date mismatch at index {i}: {current_data['date'].values} vs {actual_current_data['date'].values}")
 
-            # Predictions are already log returns; use T+1 row directly
             predicted_return = current_data.drop(columns=['date']).iloc[1]      # predicted log return at T+1
             realized_return = actual_current_data.drop(columns=['date']).iloc[1] # actual log return at T+1
 
-            # Optimize portfolio based on predicted log returns
-            self.weights = self.optimize(predicted_return, cov_matrix, target_return=target_return,
-                                         allow_short=allow_short)
-            pred_return, pred_volatility = self.calculate_portfolio_metrics(weights=self.weights, returns=predicted_return,
-                                                                       cov_matrix=cov_matrix)
+            if training:
+                # Validation mode: optimize weights at each step using predicted returns
+                self.weights = self.optimize(predicted_return, cov_matrix, target_return=target_return,
+                                             allow_short=allow_short)
 
-            real_return, real_volatility = self.calculate_portfolio_metrics(weights=self.weights, returns=realized_return,
-                                                                               cov_matrix=cov_matrix)
+            # Eval mode: self.weights is fixed from the last training step — do not re-optimize
+            pred_return, pred_volatility = self.calculate_portfolio_metrics(
+                weights=self.weights, returns=predicted_return, cov_matrix=cov_matrix)
+            real_return, real_volatility = self.calculate_portfolio_metrics(
+                weights=self.weights, returns=realized_return, cov_matrix=cov_matrix)
+
             realized_returns.append(real_return)
             predicted_returns.append(pred_return)
             realized_volatilities.append(real_volatility)
             predicted_volatilities.append(pred_volatility)
+
         return predicted_returns, realized_returns, predicted_volatilities, realized_volatilities
 
 
@@ -466,17 +434,17 @@ class Portfolio():
 
     def optimize_portfolio(self, cov_matrix, validation_data, validation_actual, test_data, test_actual, target_return: float | None = None, allow_short: bool = False):
 
-        # Calculate validation metrics
-        self.val_pred_returns, self.val_realized_returns, self.val_pred_vol, self.val_realized_vol = self.process_period(data=validation_data,
-                                                                                                actual_data=validation_actual,
-                                                                                                cov_matrix=cov_matrix,
-                                                                                                target_return=target_return,
-                                                                                                allow_short=allow_short)
-        self.test_pred_returns, self.test_realized_returns, self.test_pred_vol, self.test_realized_vol = self.process_period(data=test_data,
-                                                                                                    actual_data=test_actual,
-                                                                                                    cov_matrix=cov_matrix,
-                                                                                                    target_return=target_return,
-                                                                                                    allow_short=allow_short)
+        # Validation: optimize weights at each step (training mode)
+        self.val_pred_returns, self.val_realized_returns, self.val_pred_vol, self.val_realized_vol = self.process_period(
+            data=validation_data, actual_data=validation_actual,
+            cov_matrix=cov_matrix, target_return=target_return, allow_short=allow_short,
+            training=True)
+
+        # Test: use fixed weights from the last validation step (eval mode — no re-optimization)
+        self.test_pred_returns, self.test_realized_returns, self.test_pred_vol, self.test_realized_vol = self.process_period(
+            data=test_data, actual_data=test_actual,
+            cov_matrix=cov_matrix, target_return=target_return, allow_short=allow_short,
+            training=False)
 
         #print(self.val_pred_returns, self.val_realized_returns, self.val_pred_vol, self.val_realized_vol)
         #print(self.test_pred_returns, self.test_realized_returns, self.test_pred_vol, self.test_realized_vol)

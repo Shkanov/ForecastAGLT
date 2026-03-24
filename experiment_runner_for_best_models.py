@@ -184,11 +184,9 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     logger.info(f"Metrics DataFrame:\n{metrics_df}")
     # Create plot dataframe
     logger.info("Creating plot dataframe...")
-    closedf_for_plot = close_stock[['Close']].iloc[-1000:]  # Match the max_samples used
     plotdf = create_plot_dataframe(
         close_stock=close_stock,
         predictions=predictions,
-        closedf_shape=closedf_for_plot.shape,
         time_step_backward=time_step_backward,
         time_step_forward=time_step_forward
     )

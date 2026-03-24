@@ -217,18 +217,21 @@ if train:
     st.text(arima_model.summary())
 
     if GMDH:
-        model_gmdh = GMDHs[GMDH_algo]
-        if GMDH_algo == 'Combi':
-            model_gmdh.fit(X_train_gmdh, y_train, p_average = p_average, limit = limit, test_size=0.3,
-                           criterion = Criterion(criterion_type = criterions[criterion]))
-        if GMDH_algo == 'Multi':
-            model_gmdh.fit(X_train_gmdh, y_train, p_average=p_average, limit=limit, test_size=0.3,
-                           criterion=Criterion(criterion_type=criterions[criterion]),
-                            k_best = k_best)
-        if GMDH_algo in ['Ria', 'Mia']:
-            model_gmdh.fit(X_train_gmdh, y_train, p_average=p_average, limit=limit, test_size=0.3,
-                           criterion=Criterion(criterion_type=criterions[criterion]),
-                            k_best = k_best, polynomial_type = polynoms[polynom])
+        from models.experiment_core import train_gmdh_models
+        gmdh_params = {
+            'algorithms': {
+                'GMDH': {
+                    'type': GMDH_algo,
+                    'criterion': criterions[criterion],
+                    'p_average': p_average,
+                    'limit': limit,
+                    'k_best': k_best,
+                    'polynomial_type': polynoms[polynom]
+                }
+            }
+        }
+        gmdh_models = train_gmdh_models(X_train_gmdh, y_train, gmdh_params)
+        model_gmdh = gmdh_models['GMDH']
         st.write(f"GMDH model: {model_gmdh.get_best_polynomial()}")
 
 
@@ -285,11 +288,9 @@ if train:
     my_bar.progress(90 + 1, text='Calculated performance metrics -> Creating plot dataframe')
 
     # Create plot dataframe using shared function
-    closedf_for_plot = close_stock[['Close']].iloc[-1000:]  # Match the max_samples used
     plotdf = create_plot_dataframe(
         close_stock=close_stock,
         predictions=predictions,
-        closedf_shape=closedf_for_plot.shape,
         time_step_backward=time_step_backward,
         time_step_forward=time_step_forward
     )
