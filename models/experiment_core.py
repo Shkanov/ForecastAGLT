@@ -12,7 +12,7 @@ from typing import Dict, Tuple, Optional, Any
 
 # Sklearn imports
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 # TensorFlow/Keras imports
 from tensorflow.keras.models import Sequential
@@ -136,41 +136,82 @@ def load_crypto_data(ticker: str, interval: str = config.DEFAULT_INTERVAL) -> pd
 def preprocess_data(
     data: pd.DataFrame,
     num_scale_steps: int = 1,
-    scaling_strategy: str = 'average',
+    scaling_strategy: str = 'average_returns',
     scale_step_type: str = 'D'
 ) -> pd.DataFrame:
     """
-    Preprocess and optionally scale time series data.
+    Preprocess and optionally scale time series data. Always outputs log returns.
 
     Args:
         data: DataFrame with Date and Close columns
-        num_scale_steps: Number of steps for scaling (1 = no scaling)
-        scaling_strategy: Strategy for aggregation ('average', 'median', 'undersampling')
+        num_scale_steps: Number of steps for scaling (1 = daily, no aggregation)
+        scaling_strategy: Strategy for aggregation and log return computation:
+            'average_prices':  aggregate prices by mean per interval → log return between means
+            'average_returns': compute daily log returns → aggregate by mean per interval
+            'median_prices':   aggregate prices by median per interval → log return between medians
+            'median_returns':  compute daily log returns → aggregate by median per interval
+            'undersampling':   last price per interval → log return between interval endpoints
+            Legacy values 'average' and 'median' map to 'average_prices' and 'median_prices'.
         scale_step_type: Type of time step ('D', 'W', 'M', 'Y')
 
     Returns:
-        Preprocessed DataFrame with Date and Close columns
+        Preprocessed DataFrame with Date and Close columns containing log returns
     """
     y_overall = data[['Date', 'Close']].copy()
 
-    if num_scale_steps > 1:
+    # Map legacy strategy names for backwards compatibility
+    strategy_map = {'average': 'average_prices', 'median': 'median_prices'}
+    scaling_strategy = strategy_map.get(scaling_strategy, scaling_strategy)
+
+    if num_scale_steps <= 1:
+        # Daily log returns regardless of strategy
+        y_overall = y_overall.sort_values('Date').reset_index(drop=True)
+        y_overall['Close'] = np.log(y_overall['Close'] / y_overall['Close'].shift(1))
+        y_overall = y_overall.dropna(subset=['Close']).reset_index(drop=True)
+    else:
         scaling_step_combined = str(num_scale_steps) + scale_step_type
         today = pd.Timestamp.now().normalize()
 
-        if scaling_strategy == 'average':
+        if scaling_strategy == 'average_prices':
             y_overall['Interval_End'] = today - (
                 (today - y_overall['Date']) // pd.Timedelta(scaling_step_combined)
             ) * pd.Timedelta(scaling_step_combined)
             y_overall = y_overall.groupby('Interval_End')['Close'].mean().reset_index()
-            y_overall = y_overall.sort_values('Interval_End')
+            y_overall = y_overall.sort_values('Interval_End').reset_index(drop=True)
+            y_overall = y_overall.rename({'Interval_End': 'Date'}, axis=1)
+            y_overall['Close'] = np.log(y_overall['Close'] / y_overall['Close'].shift(1))
+            y_overall = y_overall.dropna(subset=['Close']).reset_index(drop=True)
+
+        elif scaling_strategy == 'average_returns':
+            y_overall = y_overall.sort_values('Date').reset_index(drop=True)
+            y_overall['Close'] = np.log(y_overall['Close'] / y_overall['Close'].shift(1))
+            y_overall = y_overall.dropna(subset=['Close']).reset_index(drop=True)
+            y_overall['Interval_End'] = today - (
+                (today - y_overall['Date']) // pd.Timedelta(scaling_step_combined)
+            ) * pd.Timedelta(scaling_step_combined)
+            y_overall = y_overall.groupby('Interval_End')['Close'].mean().reset_index()
+            y_overall = y_overall.sort_values('Interval_End').reset_index(drop=True)
             y_overall = y_overall.rename({'Interval_End': 'Date'}, axis=1)
 
-        elif scaling_strategy == 'median':
+        elif scaling_strategy == 'median_prices':
             y_overall['Interval_End'] = today - (
                 (today - y_overall['Date']) // pd.Timedelta(scaling_step_combined)
             ) * pd.Timedelta(scaling_step_combined)
             y_overall = y_overall.groupby('Interval_End')['Close'].median().reset_index()
-            y_overall = y_overall.sort_values('Interval_End')
+            y_overall = y_overall.sort_values('Interval_End').reset_index(drop=True)
+            y_overall = y_overall.rename({'Interval_End': 'Date'}, axis=1)
+            y_overall['Close'] = np.log(y_overall['Close'] / y_overall['Close'].shift(1))
+            y_overall = y_overall.dropna(subset=['Close']).reset_index(drop=True)
+
+        elif scaling_strategy == 'median_returns':
+            y_overall = y_overall.sort_values('Date').reset_index(drop=True)
+            y_overall['Close'] = np.log(y_overall['Close'] / y_overall['Close'].shift(1))
+            y_overall = y_overall.dropna(subset=['Close']).reset_index(drop=True)
+            y_overall['Interval_End'] = today - (
+                (today - y_overall['Date']) // pd.Timedelta(scaling_step_combined)
+            ) * pd.Timedelta(scaling_step_combined)
+            y_overall = y_overall.groupby('Interval_End')['Close'].median().reset_index()
+            y_overall = y_overall.sort_values('Interval_End').reset_index(drop=True)
             y_overall = y_overall.rename({'Interval_End': 'Date'}, axis=1)
 
         else:  # undersampling
@@ -180,6 +221,8 @@ def preprocess_data(
                 origin='end'
             ).last()
             y_overall = y_overall.reset_index()
+            y_overall['Close'] = np.log(y_overall['Close'] / y_overall['Close'].shift(1))
+            y_overall = y_overall.dropna(subset=['Close']).reset_index(drop=True)
 
     # Handle MultiIndex columns if present
     if isinstance(y_overall.columns, pd.MultiIndex):
@@ -194,7 +237,7 @@ def prepare_train_test_data(
     time_step_forward: int = config.DEFAULT_TIME_STEP_FORWARD,
     train_ratio: float = config.TRAIN_RATIO,
     max_samples: int = config.MAX_SAMPLES
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, MinMaxScaler, pd.DataFrame, Tuple[pd.Timestamp, pd.Timestamp]]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, StandardScaler, pd.DataFrame, Tuple[pd.Timestamp, pd.Timestamp]]:
     """
     Prepare training and testing data with proper scaling and windowing.
 
@@ -219,8 +262,8 @@ def prepare_train_test_data(
     dates = closedf['Date'].copy()
     data = closedf[['Close']].copy()
 
-    # Create scaler
-    scaler = MinMaxScaler(feature_range=(0, 1))
+    # Create scaler (StandardScaler is appropriate for log returns which are zero-centered)
+    scaler = StandardScaler()
 
     # Split into train and test
     training_size = int(len(data) * train_ratio)
@@ -491,11 +534,26 @@ def train_gmdh_models(
     return models
 
 
+def _safe_mape(actual: np.ndarray, predicted: np.ndarray) -> float:
+    """Compute MAPE with denominator clipped to avoid division by near-zero values."""
+    actual_flat = actual.reshape(-1)
+    predicted_flat = predicted.reshape(-1)
+    denom = np.maximum(np.abs(actual_flat), 1e-8)
+    return float(np.mean(np.abs(actual_flat - predicted_flat) / denom))
+
+
+def _directional_accuracy(actual: np.ndarray, predicted: np.ndarray) -> float:
+    """Compute fraction of predictions where sign matches actual sign."""
+    actual_flat = actual.reshape(-1)
+    predicted_flat = predicted.reshape(-1)
+    return float(np.mean(np.sign(actual_flat) == np.sign(predicted_flat)))
+
+
 def calculate_all_metrics(
     y_train: np.ndarray,
     y_test: np.ndarray,
     predictions: Dict[str, Tuple[np.ndarray, np.ndarray]],
-    scaler: MinMaxScaler
+    scaler: Any
 ) -> pd.DataFrame:
     """
     Calculate comprehensive metrics for all models.
@@ -507,9 +565,9 @@ def calculate_all_metrics(
         scaler: Scaler used for inverse transformation
 
     Returns:
-        DataFrame with metrics for each model
+        DataFrame with metrics for each model (log return space)
     """
-    # Inverse transform actual values
+    # Inverse transform actual values (now log returns)
     original_ytrain = scaler.inverse_transform(y_train.reshape(-1, 1))
     original_ytest = scaler.inverse_transform(y_test.reshape(-1, 1))
 
@@ -517,7 +575,8 @@ def calculate_all_metrics(
     metric_names = [
         "Train data RMSE", "Train data MSE", "Train data MAE", "Train data MAPE",
         "Test data RMSE", "Test data MSE", "Test data MAE", "Test data MAPE",
-        "Train data R2 score", "Test data R2 score"
+        "Train data R2 score", "Test data R2 score",
+        "Train data Directional Accuracy", "Test data Directional Accuracy"
     ]
 
     for model_name, (train_pred, test_pred) in predictions.items():
@@ -527,17 +586,21 @@ def calculate_all_metrics(
         metrics.append(math.sqrt(mean_squared_error(original_ytrain, train_pred)))
         metrics.append(mean_squared_error(original_ytrain, train_pred))
         metrics.append(mean_absolute_error(original_ytrain, train_pred))
-        metrics.append(mean_absolute_percentage_error(original_ytrain, train_pred))
+        metrics.append(_safe_mape(original_ytrain, train_pred))
 
         # Test metrics
         metrics.append(math.sqrt(mean_squared_error(original_ytest, test_pred)))
         metrics.append(mean_squared_error(original_ytest, test_pred))
         metrics.append(mean_absolute_error(original_ytest, test_pred))
-        metrics.append(mean_absolute_percentage_error(original_ytest, test_pred))
+        metrics.append(_safe_mape(original_ytest, test_pred))
 
         # R2 scores
         metrics.append(r2_score(original_ytrain, train_pred))
         metrics.append(r2_score(original_ytest, test_pred))
+
+        # Directional accuracy (fraction where sign(actual) == sign(predicted))
+        metrics.append(_directional_accuracy(original_ytrain, train_pred))
+        metrics.append(_directional_accuracy(original_ytest, test_pred))
 
         metrics_dict[model_name] = metrics
 
@@ -652,7 +715,7 @@ def make_all_predictions(
     X_train_gmdh: np.ndarray,
     X_test_gmdh: np.ndarray,
     models: Dict[str, Any],
-    scaler: MinMaxScaler,
+    scaler: Any,
     time_step_forward: int = 1,
     include_transformer: bool = False
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:

@@ -172,15 +172,15 @@ class DataLoader():
                 logger.error(f"No plot_df for ticker {ticker}. Skipping.")
                 continue
 
-            # Get best model based on lowest Test data MAPE
+            # Get best model based on lowest Test data MAE (primary metric for log returns)
             metrics_df = self.tickers_dict[ticker]['metrics_df']
-            if 'Test data MAPE' not in metrics_df.index:
-                logger.error(f"'Test data MAPE' not found in metrics for {ticker}. Available metrics: {list(metrics_df.index)}")
+            if 'Test data MAE' not in metrics_df.index:
+                logger.error(f"'Test data MAE' not found in metrics for {ticker}. Available metrics: {list(metrics_df.index)}")
                 continue
 
-            # Get model with lowest MAPE (best performance)
-            best_model = metrics_df.T['Test data MAPE'].idxmin()
-            logger.info(f"Best model for {ticker}: {best_model} (MAPE: {metrics_df.T.loc[best_model, 'Test data MAPE']:.4f})")
+            # Get model with lowest MAE (best performance)
+            best_model = metrics_df.T['Test data MAE'].idxmin()
+            logger.info(f"Best model for {ticker}: {best_model} (MAE: {metrics_df.T.loc[best_model, 'Test data MAE']:.4f})")
 
             # Generate column names for this model
             train_col = get_column_name(best_model, 'train_predicted_close')
@@ -290,16 +290,9 @@ class DataLoader():
         logger.info(f"Selected features with date: {selected_features_and_date}")
 
         # Calculate covariance matrix for the training period
-        # IMPORTANT: Portfolio optimization requires covariance of RETURNS, not prices
+        # Predictions are already log returns (preprocess_data outputs log returns)
         train_data = self.train_predictions_df_list[0].drop(columns=['date']).astype(float)
-        train_prices = train_data[self.selected_features]
-
-        # Calculate log returns: log(P_t / P_{t-1})
-        # Log returns are preferred in portfolio theory as they are more symmetric
-        train_returns = np.log(train_prices / train_prices.shift(1)).dropna()
-
-        # Alternative: Simple returns (P_t - P_{t-1}) / P_{t-1}
-        # train_returns = train_prices.pct_change().dropna()
+        train_returns = train_data[self.selected_features].dropna()
 
         self.cov_matrix = train_returns.cov()
         logger.info("Covariance matrix of log-returns for the training period:")
@@ -373,13 +366,11 @@ class Portfolio():
         """
         Process a period for portfolio optimization.
 
-        IMPORTANT: Both 'data' and 'actual_data' should contain prices in the SAME scale (original, not scaled).
-        - 'data': Predicted prices (already inverse-transformed from plotdf)
-        - 'actual_data': Actual prices (original scale)
+        Both 'data' and 'actual_data' contain log returns (output of preprocess_data).
 
         Args:
-            data: DataFrame with predicted prices and date column
-            actual_data: DataFrame with actual prices and date column
+            data: DataFrame with predicted log returns and date column
+            actual_data: DataFrame with actual log returns and date column
             cov_matrix: Covariance matrix of returns
             target_return: Target return for optimization (optional)
             allow_short: Whether to allow short positions
@@ -401,21 +392,15 @@ class Portfolio():
             if not current_data['date'].equals(actual_current_data['date']):
                 logger.warning(f"Date mismatch at index {i}: {current_data['date'].values} vs {actual_current_data['date'].values}")
 
-            # Calculate predicted return: (predicted_price_T+1 / actual_price_T) - 1
-            # Using actual price at T as baseline ensures we're comparing apples to apples
-            actual_prices_t = actual_current_data.drop(columns=['date']).iloc[0]
-            predicted_prices_t1 = current_data.drop(columns=['date']).iloc[1]
+            # Predictions are already log returns; use T+1 row directly
+            predicted_return = current_data.drop(columns=['date']).iloc[1]      # predicted log return at T+1
+            realized_return = actual_current_data.drop(columns=['date']).iloc[1] # actual log return at T+1
 
-            # Returns should be calculated as: (P_t+1 - P_t) / P_t = P_t+1/P_t - 1
-            predicted_return = (predicted_prices_t1 - actual_prices_t) / actual_prices_t
-            # Optimize portfolio based on predicted returns
+            # Optimize portfolio based on predicted log returns
             self.weights = self.optimize(predicted_return, cov_matrix, target_return=target_return,
                                          allow_short=allow_short)
             pred_return, pred_volatility = self.calculate_portfolio_metrics(weights=self.weights, returns=predicted_return,
                                                                        cov_matrix=cov_matrix)
-            # Compute realized return using actual prices for T and T+1
-            realized_return = (actual_current_data.drop(columns=['date']).iloc[1] -
-                               actual_current_data.drop(columns=['date']).iloc[0]) / actual_current_data.drop(columns=['date']).iloc[0]
 
             real_return, real_volatility = self.calculate_portfolio_metrics(weights=self.weights, returns=realized_return,
                                                                                cov_matrix=cov_matrix)

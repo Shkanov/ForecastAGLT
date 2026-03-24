@@ -82,7 +82,7 @@ y_overall = maindf.copy()#.loc[(maindf['Date'] >= '2014-09-17')]
 
 global_expander = st.sidebar.expander('Параметры режима моделирования')
 scaling_expander= st.sidebar.expander('Режим масштабирования')
-scaling_strategy_list = ['median', 'average', 'undersampling']
+scaling_strategy_list = ['average_returns', 'median_returns', 'undersampling', 'average_prices', 'median_prices']
 scale_step_type_list = ['D','W','M','Y']
 scale_step_type = scaling_expander.selectbox('Шаг масштабирования', scale_step_type_list)
 num_scale_steps = scaling_expander.slider('Размер шага масштабирования', 1, 100, 1)
@@ -91,7 +91,7 @@ num_scale_steps = scaling_expander.slider('Размер шага масштаб�
 if num_scale_steps > 1:
     scaling_strategy = scaling_expander.selectbox('Метод масштабирования', scaling_strategy_list)
 else:
-    scaling_strategy = 'median'  # Default, won't be used when num_scale_steps=1
+    scaling_strategy = 'average_returns'  # Default, won't be used when num_scale_steps=1
 
 y_overall = preprocess_data(y_overall, num_scale_steps, scaling_strategy, scale_step_type)
 
@@ -308,7 +308,8 @@ if train:
                     label=f'Предсказанная цена закрытия на тесте {model_name}')
 
     ax.legend()
-    ax.set_title("Сравнение исходных и смоделированных цен")
+    ax.set_title("Сравнение исходных и смоделированных лог-доходностей")
+    ax.set_ylabel("Log Return")
     st.pyplot(fig)
     plt.close(fig)  # Explicitly close to prevent memory leaks
 
