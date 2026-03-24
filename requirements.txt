@@ -2,7 +2,7 @@ git+https://github.com/amazon-science/chronos-forecasting.git
 pmdarima==2.0.4
 streamlit==1.31.0
 yfinance==0.2.35
-gmdh==1.0.4
+gmdh==1.0.3
 tqdm==4.66.1
 tensorflow==2.16.1
 matplotlib==3.10.8

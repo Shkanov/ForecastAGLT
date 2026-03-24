@@ -16,10 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 
-# Install dependencies, making gmdh optional since GMDH is disabled by default in the code
+# Install all dependencies except gmdh (which may fail to build on some architectures)
 RUN pip install --upgrade pip setuptools wheel \
- && pip install -r requirements.txt \
- && (pip install gmdh || echo "Warning: gmdh installation failed, continuing without it")
+ && grep -v '^gmdh' requirements.txt > requirements_no_gmdh.txt \
+ && pip install -r requirements_no_gmdh.txt \
+ && (pip install gmdh==1.0.3 || echo "Warning: gmdh installation failed, GMDH models will be unavailable")
 
 COPY . .
 
