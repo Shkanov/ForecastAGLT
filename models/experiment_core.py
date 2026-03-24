@@ -284,7 +284,7 @@ def prepare_train_test_data(
             f"Test data has {test_size} samples but {min_required_size} required "
             f"(2x window size for proper evaluation). "
             f"Solutions: (1) Reduce time_step_backward (currently {time_step_backward}) or time_step_forward (currently {time_step_forward}), "
-            f"(2) Increase train_ratio to leave more test data (currently {train_ratio:.0%} for training), "
+            f"(2) Decrease train_ratio to leave more test data (currently {train_ratio:.0%} for training), "
             f"(3) Increase max_samples (currently {max_samples}), or (4) Get more historical data. "
             f"Total available: {len(data)} samples."
         )
@@ -323,7 +323,7 @@ def train_lstm(
     Train an LSTM model for time series prediction.
 
     Args:
-        X_train: Training features (samples, time_steps, features)
+        X_train: Training features — 2D (samples, time_steps) or 3D (samples, time_steps, 1); reshaped to 3D internally
         y_train: Training targets
         X_test: Test features for validation
         y_test: Test targets for validation
@@ -613,9 +613,9 @@ def calculate_all_metrics(
 def create_plot_dataframe(
     close_stock: pd.DataFrame,
     predictions: Dict[str, Tuple[np.ndarray, np.ndarray]],
-    closedf_shape: Tuple[int, int],
     time_step_backward: int,
-    time_step_forward: int = 1
+    time_step_forward: int = 1,
+    closedf_shape: Optional[Tuple[int, int]] = None  # deprecated, derived from close_stock
 ) -> pd.DataFrame:
     """
     Create a DataFrame for plotting predictions vs actual values.
@@ -623,13 +623,14 @@ def create_plot_dataframe(
     Args:
         close_stock: Original close stock DataFrame with Date and Close columns
         predictions: Dict mapping model names to (train_pred, test_pred) tuples
-        closedf_shape: Shape of the closedf used for creating empty arrays
         time_step_backward: Number of backward steps (for lag calculation)
         time_step_forward: Number of forward steps (for lag calculation)
+        closedf_shape: Deprecated — shape is derived from close_stock automatically
 
     Returns:
         DataFrame with date, original close, and all model predictions
     """
+    closedf_shape = close_stock[['Close']].shape
     lag = time_step_backward + (time_step_forward - 1)
 
     # Start with date and original close
@@ -646,7 +647,8 @@ def create_plot_dataframe(
 
         # Validate train predictions shape matches expected range
         train_start_idx = lag
-        train_end_idx = len(train_pred) + lag
+        original_train_pred_len = len(train_pred)
+        train_end_idx = original_train_pred_len + lag
         if train_end_idx > closedf_shape[0]:
             logger.warning(
                 f"Train predictions for {model_name} exceed data size. "
@@ -662,7 +664,8 @@ def create_plot_dataframe(
         testPredictPlot[:, :] = np.nan
 
         # Validate test predictions shape matches expected range
-        test_start_idx = len(train_pred) + (lag * 2)
+        # Use original_train_pred_len (before any truncation) so test offset is stable
+        test_start_idx = original_train_pred_len + (lag * 2)
         test_end_idx = closedf_shape[0]
         expected_test_len = test_end_idx - test_start_idx
 

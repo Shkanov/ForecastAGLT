@@ -8,7 +8,8 @@ def create_dataset(dataset: np.ndarray, time_step_backward: int = 1,
     Create sliding window dataset for time series prediction.
 
     Args:
-        dataset: 2D numpy array of shape (n_samples, n_features) containing time series data
+        dataset: 2D numpy array of shape (n_samples, 1) — a univariate 1D time series
+            with a single feature column (as produced by scaler.fit_transform on a single series)
         time_step_backward: Number of historical time steps to use as features (lookback window)
         time_step_forward: Number of future time steps to predict (forecast horizon)
 
