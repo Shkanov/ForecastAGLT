@@ -1,19 +1,38 @@
 import numpy as np
-from typing import Literal
+from typing import Literal, Tuple, List, Optional
 import torch
-from typing import List
 
-def create_dataset(dataset, time_step_backward = 1, time_step_forward = 1):
+def create_dataset(dataset: np.ndarray, time_step_backward: int = 1,
+                   time_step_forward: int = 1) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Create sliding window dataset for time series prediction.
+
+    Args:
+        dataset: 2D numpy array of shape (n_samples, 1) — a univariate 1D time series
+            with a single feature column (as produced by scaler.fit_transform on a single series)
+        time_step_backward: Number of historical time steps to use as features (lookback window)
+        time_step_forward: Number of future time steps to predict (forecast horizon)
+
+    Returns:
+        Tuple of (X, y) where:
+            - X: Array of shape (n_windows, time_step_backward) containing feature windows
+            - y: Array of shape (n_windows,) containing target values
+
+    Example:
+        If dataset = [[1], [2], [3], [4], [5]] with time_step_backward=2, time_step_forward=1:
+        X = [[1, 2], [2, 3], [3, 4]]
+        y = [3, 4, 5]
+    """
     dataX, dataY = [], []
     for i in range(len(dataset) - time_step_backward - (time_step_forward - 1)):
-        a = dataset[i:(i + time_step_backward), 0]  ###i=0, 0,1,2,3-----99   100
+        a = dataset[i:(i + time_step_backward), 0]
         dataX.append(a)
         dataY.append(dataset[i + time_step_backward + (time_step_forward - 1), 0])
     return np.array(dataX), np.array(dataY)
 
 def make_prediction(X_train: np.ndarray, X_test: np.ndarray,
                     method: Literal['LSTM', 'GMDH', 'Transformer', 'SARIMA'],
-                    model, scaler, time_step_forward: None) -> np.ndarray:
+                    model, scaler, time_step_forward: int) -> Tuple[np.ndarray, np.ndarray]:
     if method == 'LSTM':
         train_predict = model.predict(X_train)
         test_predict = model.predict(X_test)
@@ -21,15 +40,34 @@ def make_prediction(X_train: np.ndarray, X_test: np.ndarray,
         test_predict = scaler.inverse_transform(test_predict)
         return train_predict, test_predict
     elif method == 'SARIMA':
+        # SARIMA models handle their own history internally and don't use windowed features
+        # We make in-sample predictions for training data and out-of-sample for test data
+        # NOTE: X_train and X_test represent sliding windows, but SARIMA doesn't use them
+        # Instead, we predict directly from the model's internal state
+
         train_predict_arima = []
         test_predict_arima = []
-        for sample in X_train:
-            train_predict_arima.append(
-                model.fit_predict(sample, n_periods=time_step_forward, return_conf_int=False)[-1])
+
+        # For training set: Use in-sample predictions
+        # Get predictions for the same length as training windows
+        n_train = len(X_train)
+        train_preds = model.predict_in_sample()  # In-sample predictions
+
+        # Take the last n_train predictions to match our windowed dataset
+        if len(train_preds) >= n_train:
+            train_predict_arima = train_preds[-n_train:]
+        else:
+            # If not enough predictions, pad with the available ones
+            train_predict_arima = np.pad(train_preds, (n_train - len(train_preds), 0),
+                                         mode='edge')
+
+        # For test set: Make out-of-sample forecasts
+        # Predict n_test steps ahead from the end of training data
+        n_test = len(X_test)
+        test_preds = model.predict(n_periods=n_test)
+        test_predict_arima = test_preds
+
         train_predict_arima = np.array(train_predict_arima)
-        for sample in X_test:
-            test_predict_arima.append(
-                model.fit_predict(sample, n_periods=time_step_forward, return_conf_int=False)[-1])
         test_predict_arima = np.array(test_predict_arima)
         train_predict_arima = scaler.inverse_transform(train_predict_arima.reshape(-1, 1))
         test_predict_arima = scaler.inverse_transform(test_predict_arima.reshape(-1, 1))
@@ -69,7 +107,23 @@ def make_prediction(X_train: np.ndarray, X_test: np.ndarray,
 
 def make_prediction_recursive(test_data: np.ndarray,
                               method: Literal['LSTM', 'GMDH', 'Transformer', 'SARIMA'],
-                              model, scaler, pred_days: None, time_step_backward: None) -> List[int]:
+                              model, scaler, pred_days: int, time_step_backward: int) -> np.ndarray:
+    """
+    Make recursive predictions for future time steps.
+
+    Recursively predicts future values by using each prediction as input for the next step.
+
+    Args:
+        test_data: Scaled test data array
+        method: Model type to use for predictions
+        model: Trained model instance
+        scaler: MinMaxScaler instance for inverse transformation
+        pred_days: Number of days to predict into the future
+        time_step_backward: Number of historical steps to use as features
+
+    Returns:
+        Array of shape (pred_days, 1) containing predictions in original scale
+    """
     if method == 'LSTM':
         x_input_lstm = test_data[len(test_data) - time_step_backward:].reshape(1, -1)
         temp_input_lstm = list(x_input_lstm)
@@ -99,9 +153,9 @@ def make_prediction_recursive(test_data: np.ndarray,
         lst_output_lstm = scaler.inverse_transform(lst_output_lstm)
         return lst_output_lstm
     elif method == 'SARIMA':
-        x_input_arima = test_data[len(test_data) - time_step_backward:]
-        n_steps = time_step_backward
-        lst_output_arima = model.fit_predict(x_input_arima, n_periods=pred_days, return_conf_int=False)  # [-1]
+        # Use the already-fitted model to predict future values
+        # Don't refit (fit_predict causes data leakage) - just predict
+        lst_output_arima = model.predict(n_periods=pred_days, return_conf_int=False)
         lst_output_arima = scaler.inverse_transform(lst_output_arima.reshape(-1, 1))
         return lst_output_arima
     elif method == 'GMDH':

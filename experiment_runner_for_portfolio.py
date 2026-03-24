@@ -1,9 +1,23 @@
+"""
+Portfolio optimization module.
+
+This module builds portfolios from individual asset predictions.
+It depends on experiment_runner_for_best_models to generate predictions
+for each ticker, then optimizes portfolio weights based on those predictions.
+
+Dependency Direction: portfolio -> best_models -> experiment_core
+This is a one-way dependency chain, not circular.
+"""
+
 import requests
 from experiment_runner_for_best_models import experiment
 from datetime import datetime
 from tqdm import tqdm
 import numpy as np
 import scipy.optimize as sco
+from logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class DataLoader():
@@ -11,7 +25,6 @@ class DataLoader():
         self.correlation_threshold = correlation_threshold
     # Function to get top N cryptocurrency tickers
     def get_top_crypto_tickers(self, n):
-
         url = 'https://api.coingecko.com/api/v3/coins/markets'
         params = {
             'vs_currency': 'usd',
@@ -20,10 +33,31 @@ class DataLoader():
             'page': 1,
             'sparkline': 'false'
         }
-        response = requests.get(url, params=params)
-        data = response.json()
-        tickers = [coin['symbol'].upper() for coin in data]
-        return tickers
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if not isinstance(data, list) or len(data) == 0:
+                logger.error("API returned unexpected data format or empty list")
+                raise ValueError("No cryptocurrency data returned from API")
+
+            tickers = [coin['symbol'].upper() for coin in data]
+            logger.info(f"Successfully fetched {len(tickers)} tickers from CoinGecko API")
+            return tickers
+
+        except requests.exceptions.Timeout:
+            logger.error("API request timed out after 10 seconds")
+            raise
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP error occurred: {e}")
+            raise
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API request failed: {e}")
+            raise
+        except (KeyError, ValueError) as e:
+            logger.error(f"Error parsing API response: {e}")
+            raise
 
 
     # Function to validate if a ticker is compatible with yfinance
@@ -42,7 +76,7 @@ class DataLoader():
         self.tickers = self.get_top_crypto_tickers(top_n)
         # Validate tickers for compatibility with yfinance
         self.valid_tickers = [ticker for ticker in self.tickers if self.validate_ticker(ticker)]
-        print("Compatible tickers for yfinance:", len(self.valid_tickers))
+        logger.info(f"Compatible tickers for yfinance: {len(self.valid_tickers)}")
         self.invalid_tickers = []
 
         # Run experiments for each valid ticker
@@ -56,46 +90,37 @@ class DataLoader():
                 self.tickers_dict[ticker]['metrics_df'] = metrics_df
                 self.tickers_dict[ticker]['models_dict'] = models_dict
             except AssertionError as e:  # Или другой конкретный тип ошибки
-                print('EXCEPTION ', str(e), ticker)
+                logger.error(f'EXCEPTION {str(e)} {ticker}')
                 self.invalid_tickers.append(ticker)
                 continue
 
         for invalid_ticker in self.invalid_tickers:
             self.valid_tickers.remove(invalid_ticker)
 
-        # Mapping for prediction columns
-        test_predictions_model_mapper = {
-            'SARIMA': 'test_predicted_close_arima',
-            'LSTM': 'test_predicted_close',
-            'GMDH_1': 'test_predicted_close_gmdh_1',
-            'GMDH_2': 'test_predicted_close_gmdh_2',
-            'Transformer': 'test_predicted_close_transformer'
-        }
-        train_predictions_model_mapper = {
-            'SARIMA': 'train_predicted_close_arima',
-            'LSTM': 'train_predicted_close',
-            'GMDH_1': 'train_predicted_close_gmdh_1',
-            'GMDH_2': 'train_predicted_close_gmdh_2',
-            'Transformer': 'train_predicted_close_transformer'
-        }
+        def get_column_name(model_name: str, prefix: str) -> str:
+            """Generate plot_df column name from model name using the same rule as create_plot_dataframe."""
+            suffix = model_name.lower().replace(' ', '_')
+            return f"{prefix}_{suffix}"
 
         # Determine global training and testing periods
         self.global_min_date = datetime(2000, 1, 1, 0, 0)
         self.global_max_date = datetime.now()
         for ticker in self.valid_tickers:
-            train_last_valid_index = self.tickers_dict[ticker]['plot_df']['train_predicted_close_arima'].last_valid_index()
-            train_last_date = self.tickers_dict[ticker]['plot_df'].loc[train_last_valid_index, 'date']
+            # Use SARIMA predictions (always present) to determine global date boundaries
+            plot_df = self.tickers_dict[ticker]['plot_df']
+            train_last_valid_index = plot_df['train_predicted_close_sarima'].last_valid_index()
+            train_last_date = plot_df.loc[train_last_valid_index, 'date']
             if train_last_date < self.global_max_date:
                 self.global_max_date = train_last_date
 
-            test_first_valid_index = self.tickers_dict[ticker]['plot_df']['test_predicted_close_arima'].first_valid_index()
-            test_first_date = self.tickers_dict[ticker]['plot_df'].loc[test_first_valid_index, 'date']
+            test_first_valid_index = plot_df['test_predicted_close_sarima'].first_valid_index()
+            test_first_date = plot_df.loc[test_first_valid_index, 'date']
             if test_first_date > self.global_min_date:
                 self.global_min_date = test_first_date
 
-            print(train_last_date, train_last_valid_index, test_first_date, test_first_valid_index)
+            logger.debug(f"{train_last_date} {train_last_valid_index} {test_first_date} {test_first_valid_index}")
 
-        print(self.global_min_date , self.global_max_date)
+        logger.info(f"Global min date: {self.global_min_date}, Global max date: {self.global_max_date}")
 
         # Collect predictions for the global periods
         self.train_predictions_df_list = []
@@ -103,20 +128,60 @@ class DataLoader():
         self.actual_prices_train = []
         self.actual_prices_test = []
         for ticker in tqdm(self.valid_tickers):
-            best_model = self.tickers_dict[ticker]['metrics_df'].T.sort_values(by='Test data MAPE', ascending=True).index[0]
-            train_predictions = self.tickers_dict[ticker]['plot_df'][['date', train_predictions_model_mapper[best_model]]]
+            # Validate ticker data exists
+            if ticker not in self.tickers_dict:
+                logger.error(f"Ticker {ticker} not found in tickers_dict. Skipping.")
+                continue
+
+            if 'metrics_df' not in self.tickers_dict[ticker]:
+                logger.error(f"No metrics_df for ticker {ticker}. Skipping.")
+                continue
+
+            if 'plot_df' not in self.tickers_dict[ticker]:
+                logger.error(f"No plot_df for ticker {ticker}. Skipping.")
+                continue
+
+            # Get best model based on lowest Test data MAE (primary metric for log returns)
+            metrics_df = self.tickers_dict[ticker]['metrics_df']
+            if 'Test data MAE' not in metrics_df.index:
+                logger.error(f"'Test data MAE' not found in metrics for {ticker}. Available metrics: {list(metrics_df.index)}")
+                continue
+
+            # Get model with lowest MAE (best performance)
+            best_model = metrics_df.T['Test data MAE'].idxmin()
+            logger.info(f"Best model for {ticker}: {best_model} (MAE: {metrics_df.T.loc[best_model, 'Test data MAE']:.4f})")
+
+            # Generate column names for this model
+            train_col = get_column_name(best_model, 'train_predicted_close')
+            test_col = get_column_name(best_model, 'test_predicted_close')
+
+            plot_df = self.tickers_dict[ticker]['plot_df']
+
+            # Validate columns exist in plot_df
+            required_cols = ['date', 'original_close', train_col, test_col]
+            missing_cols = [col for col in required_cols if col not in plot_df.columns]
+            if missing_cols:
+                logger.error(
+                    f"Missing columns {missing_cols} in plot_df for {ticker}. "
+                    f"Best model: {best_model}, expected columns: {train_col}, {test_col}. "
+                    f"Available columns: {[c for c in plot_df.columns if 'predicted' in c]}. Skipping."
+                )
+                continue
+
+            # Extract predictions and actual prices
+            train_predictions = plot_df[['date', train_col]].copy()
             train_predictions = train_predictions[train_predictions['date'] <= self.global_max_date]
-            train_predictions.rename(columns={train_predictions_model_mapper[best_model]: ticker}, inplace=True)
+            train_predictions.rename(columns={train_col: ticker}, inplace=True)
             self.train_predictions_df_list.append(train_predictions)
 
-            actual_train = self.tickers_dict[ticker]['plot_df'][['date', 'original_close']]
+            actual_train = plot_df[['date', 'original_close']].copy()
             actual_train = actual_train[actual_train['date'] <= self.global_max_date]
             actual_train.rename(columns={'original_close': ticker}, inplace=True)
             self.actual_prices_train.append(actual_train)
 
-            test_predictions = self.tickers_dict[ticker]['plot_df'][['date', test_predictions_model_mapper[best_model]]]
+            test_predictions = plot_df[['date', test_col]].copy()
             test_predictions = test_predictions[test_predictions['date'] >= self.global_min_date]
-            test_predictions.rename(columns={test_predictions_model_mapper[best_model]: ticker}, inplace=True)
+            test_predictions.rename(columns={test_col: ticker}, inplace=True)
             self.test_predictions_df_list.append(test_predictions)
 
             actual_test = self.tickers_dict[ticker]['plot_df'][['date', 'original_close']]
@@ -125,41 +190,106 @@ class DataLoader():
             self.actual_prices_test.append(actual_test)
 
         self.selected_features = [self.valid_tickers[0]]
+        if not self.valid_tickers:
+            raise ValueError("No valid tickers downloaded from Yahoo Finance")
+
+        # Build merged dataframes separately to avoid corrupting loop data
+        merged_train_predictions = self.train_predictions_df_list[0].copy()
+        merged_actual_train = self.actual_prices_train[0].copy()
+        merged_test_predictions = self.test_predictions_df_list[0].copy()
+        merged_actual_test = self.actual_prices_test[0].copy()
+
         #correlation_threshold = 0.9
         for idx, feature in enumerate(self.valid_tickers):
             if idx == 0:
                 continue
-            print(idx, feature)
-            tmp = self.train_predictions_df_list[0].merge(self.train_predictions_df_list[idx], on='date', how='inner')
-            # Вычисляем корреляцию нового признака с уже выбранными
-            correlations = [abs(tmp[feature].corr(tmp[sel_feature])) for sel_feature in self.selected_features]
-            print(correlations)
-            max_correlation = max(correlations)
+            logger.debug(f"Processing feature {idx}: {feature}")
 
-            # Добавляем признак, если максимальная корреляция не превышает порог
-            if max_correlation < self.correlation_threshold:
-                self.selected_features.append(feature)
-                self.train_predictions_df_list[0] = self.train_predictions_df_list[0].merge(self.train_predictions_df_list[idx], on='date', how='inner')
-                self.actual_prices_train[0] = self.actual_prices_train[0].merge(self.actual_prices_train[idx], on='date', how='inner')
-                self.test_predictions_df_list[0] = self.test_predictions_df_list[0].merge(self.test_predictions_df_list[idx], on='date', how='inner')
-                self.actual_prices_test[0] = self.actual_prices_test[0].merge(self.actual_prices_test[idx], on='date', how='inner')
-        print(self.selected_features)
+            try:
+                # Check correlation with already selected features
+                tmp = merged_train_predictions.merge(self.train_predictions_df_list[idx], on='date', how='inner')
+
+                if tmp.empty:
+                    logger.warning(f"Merge with feature {feature} resulted in empty DataFrame. Skipping.")
+                    continue
+
+                correlations = [abs(tmp[feature].corr(tmp[sel_feature])) for sel_feature in self.selected_features]
+                logger.debug(f"Correlations: {correlations}")
+                max_correlation = max(correlations) if correlations else 0
+
+                # Add feature if correlation is below threshold
+                if max_correlation < self.correlation_threshold:
+                    # Perform all merges atomically - if any fails, we don't update anything
+                    new_train_pred = merged_train_predictions.merge(self.train_predictions_df_list[idx], on='date', how='inner')
+                    new_actual_train = merged_actual_train.merge(self.actual_prices_train[idx], on='date', how='inner')
+                    new_test_pred = merged_test_predictions.merge(self.test_predictions_df_list[idx], on='date', how='inner')
+                    new_actual_test = merged_actual_test.merge(self.actual_prices_test[idx], on='date', how='inner')
+
+                    # Only update if all merges succeeded
+                    if new_train_pred.empty or new_actual_train.empty or new_test_pred.empty or new_actual_test.empty:
+                        logger.warning(f"One or more merges with feature {feature} resulted in empty DataFrame. Skipping.")
+                        continue
+
+                    self.selected_features.append(feature)
+                    merged_train_predictions = new_train_pred
+                    merged_actual_train = new_actual_train
+                    merged_test_predictions = new_test_pred
+                    merged_actual_test = new_actual_test
+
+                    logger.info(f"Added feature {feature} (correlation: {max_correlation:.4f})")
+
+            except Exception as e:
+                logger.error(f"Error processing feature {feature} at index {idx}: {e}")
+                logger.error("Skipping this feature and continuing...")
+                continue
+
+        # Update the original lists with merged dataframes only at the end (atomic update)
+        self.train_predictions_df_list[0] = merged_train_predictions
+        self.actual_prices_train[0] = merged_actual_train
+        self.test_predictions_df_list[0] = merged_test_predictions
+        self.actual_prices_test[0] = merged_actual_test
+
+        logger.info(f"Selected features: {self.selected_features}")
 
         selected_features_and_date = ['date'] + self.selected_features
-        print(selected_features_and_date)
+        logger.info(f"Selected features with date: {selected_features_and_date}")
 
         # Calculate covariance matrix for the training period
+        # Predictions are already log returns (preprocess_data outputs log returns)
         train_data = self.train_predictions_df_list[0].drop(columns=['date']).astype(float)
-        self.cov_matrix = train_data[self.selected_features].cov()
-        print("Covariance matrix for the training period:")
-        print(self.cov_matrix)
+        train_returns = train_data[self.selected_features].dropna()
 
-        # Split the global test period into validation and test sets
-        self.validation_size = int(len(self.test_predictions_df_list[0][selected_features_and_date]) * 0.5)
+        self.cov_matrix = train_returns.cov()
+        logger.info("Covariance matrix of log-returns for the training period:")
+        logger.info(f"\n{self.cov_matrix}")
+
+        # Split the global test period into validation and test sets (50/50 split)
+        # Validation: First half of test period (for hyperparameter tuning)
+        # Test: Second half of test period (for final evaluation)
+        total_test_samples = len(self.test_predictions_df_list[0][selected_features_and_date])
+        self.validation_size = int(total_test_samples * 0.5)
+
+        # Ensure we have enough data for both sets
+        if self.validation_size < 2:
+            raise ValueError(
+                f"Test period too small to split. Total samples: {total_test_samples}, "
+                f"validation size: {self.validation_size}. Need at least 4 samples total."
+            )
+
         self.validation_data = self.test_predictions_df_list[0][selected_features_and_date].iloc[:self.validation_size]
         self.validation_actual = self.actual_prices_test[0][selected_features_and_date].iloc[:self.validation_size]
         self.test_data = self.test_predictions_df_list[0][selected_features_and_date].iloc[self.validation_size:]
         self.test_actual = self.actual_prices_test[0][selected_features_and_date].iloc[self.validation_size:]
+
+        # Validate no overlap between validation and test sets
+        val_dates = set(self.validation_data['date'])
+        test_dates = set(self.test_data['date'])
+        overlap = val_dates & test_dates
+        if overlap:
+            raise ValueError(f"Date overlap detected between validation and test sets: {overlap}")
+
+        logger.info(f"Split test period: {total_test_samples} samples -> "
+                   f"validation: {len(self.validation_data)}, test: {len(self.test_data)}")
 
         # Проверка положительной определённости
         if np.any(np.linalg.eigvals(self.cov_matrix) <= 0):
@@ -197,60 +327,124 @@ class Portfolio():
         )
         return result.x
 
-    def process_period(self, data, actual_data, cov_matrix, target_return=None, allow_short=False):
-        # Forecast and optimize portfolio for each point T -> T+1 in validation and test data
+    def process_period(self, data, actual_data, cov_matrix, target_return=None, allow_short=False, training=True):
+        """
+        Process a period for portfolio evaluation.
+
+        Both 'data' and 'actual_data' contain log returns (output of preprocess_data).
+
+        Args:
+            data: DataFrame with predicted log returns and date column
+            actual_data: DataFrame with actual log returns and date column
+            cov_matrix: Covariance matrix of returns
+            target_return: Target return for optimization (optional)
+            allow_short: Whether to allow short positions
+            training: If True, re-optimize weights at each step (validation mode).
+                      If False, use self.weights fixed from the last training step (test mode).
+
+        Returns:
+            Tuple of (predicted_returns, realized_returns, predicted_volatilities, realized_volatilities)
+        """
         realized_returns = []
         predicted_returns = []
         realized_volatilities = []
         predicted_volatilities = []
-        for i in range(len(data) - 1):
-            current_data = data.iloc[i:i + 2]  # Include current day and prediction for next day
-            actual_current_data = actual_data.iloc[i:i + 2]  # Actual prices for T and T+1
-            # Calculate predicted return using actual price at T and predicted price at T+1
-            predicted_return = (current_data.drop(columns=['date']).iloc[1]-
-                                actual_current_data.drop(columns=['date']).iloc[0]) / actual_current_data.drop(columns=['date']).iloc[0]
-            # Optimize portfolio based on predicted returns
-            self.weights = self.optimize(predicted_return, cov_matrix, target_return=target_return,
-                                         allow_short=allow_short)
-            pred_return, pred_volatility = self.calculate_portfolio_metrics(weights=self.weights, returns=predicted_return,
-                                                                       cov_matrix=cov_matrix)
-            # Compute realized return using actual prices for T and T+1
-            realized_return = (actual_current_data.drop(columns=['date']).iloc[1] -
-                               actual_current_data.drop(columns=['date']).iloc[0]) / actual_current_data.drop(columns=['date']).iloc[0]
 
-            real_return, real_volatility = self.calculate_portfolio_metrics(weights=self.weights, returns=realized_return,
-                                                                               cov_matrix=cov_matrix)
+        for i in range(len(data) - 1):
+            current_data = data.iloc[i:i + 2]
+            actual_current_data = actual_data.iloc[i:i + 2]
+
+            if not current_data['date'].equals(actual_current_data['date']):
+                logger.warning(f"Date mismatch at index {i}: {current_data['date'].values} vs {actual_current_data['date'].values}")
+
+            predicted_return = current_data.drop(columns=['date']).iloc[1]      # predicted log return at T+1
+            realized_return = actual_current_data.drop(columns=['date']).iloc[1] # actual log return at T+1
+
+            if training:
+                # Validation mode: optimize weights at each step using predicted returns
+                self.weights = self.optimize(predicted_return, cov_matrix, target_return=target_return,
+                                             allow_short=allow_short)
+
+            # Eval mode: self.weights is fixed from the last training step — do not re-optimize
+            pred_return, pred_volatility = self.calculate_portfolio_metrics(
+                weights=self.weights, returns=predicted_return, cov_matrix=cov_matrix)
+            real_return, real_volatility = self.calculate_portfolio_metrics(
+                weights=self.weights, returns=realized_return, cov_matrix=cov_matrix)
+
             realized_returns.append(real_return)
             predicted_returns.append(pred_return)
             realized_volatilities.append(real_volatility)
             predicted_volatilities.append(pred_volatility)
+
         return predicted_returns, realized_returns, predicted_volatilities, realized_volatilities
 
 
     # Calculate accuracy metrics for validation and test sets
     def calculate_accuracy(self, predicted, realized):
-        return np.mean(np.abs(np.array(predicted) - np.array(realized))) / np.mean(realized)
+        """Calculate normalized mean absolute error (NMAE).
+
+        Returns NMAE if mean of realized is non-zero, otherwise returns MAE.
+        """
+        mae = np.mean(np.abs(np.array(predicted) - np.array(realized)))
+        mean_realized = np.mean(realized)
+
+        # Avoid division by zero or near-zero values
+        if abs(mean_realized) < 1e-10:
+            logger.warning(f"Mean realized value too close to zero ({mean_realized}), returning MAE instead of normalized error")
+            return mae
+
+        return mae / abs(mean_realized)
 
 
     # Calculate Sharpe ratio deviation
     def calculate_sharpe_ratio_deviation(self, predicted_returns, realized_returns, predicted_vol, realized_vol):
-        predicted_sharpe = np.mean(predicted_returns) / np.mean(predicted_vol)
-        realized_sharpe = np.mean(realized_returns) / np.mean(realized_vol)
+        """
+        Calculate the absolute deviation between predicted and realized Sharpe ratios.
+
+        Sharpe ratio = mean(returns) / mean(volatility)
+
+        Returns:
+            Absolute difference between predicted and realized Sharpe ratios, or np.nan if volatility is too low
+        """
+        mean_pred_vol = np.mean(predicted_vol)
+        mean_real_vol = np.mean(realized_vol)
+
+        # Check for near-zero volatility (threshold: 1e-10)
+        if abs(mean_pred_vol) < 1e-10 or abs(mean_real_vol) < 1e-10:
+            logger.warning(
+                f"Volatility too close to zero for Sharpe ratio calculation. "
+                f"Predicted vol: {mean_pred_vol}, Realized vol: {mean_real_vol}. "
+                f"Returning NaN for Sharpe deviation."
+            )
+            return np.nan
+
+        predicted_sharpe = np.mean(predicted_returns) / mean_pred_vol
+        realized_sharpe = np.mean(realized_returns) / mean_real_vol
+
+        # Check for infinite Sharpe ratios
+        if not np.isfinite(predicted_sharpe) or not np.isfinite(realized_sharpe):
+            logger.warning(
+                f"Non-finite Sharpe ratio detected. "
+                f"Predicted: {predicted_sharpe}, Realized: {realized_sharpe}. "
+                f"Returning NaN."
+            )
+            return np.nan
+
         return abs(predicted_sharpe - realized_sharpe)
 
-    def optimize_portfolio(self, cov_matrix, validation_data, validation_actual, test_data, test_actual, target_return: int | None = None, allow_short: bool = False):
+    def optimize_portfolio(self, cov_matrix, validation_data, validation_actual, test_data, test_actual, target_return: float | None = None, allow_short: bool = False):
 
-        # Calculate validation metrics
-        self.val_pred_returns, self.val_realized_returns, self.val_pred_vol, self.val_realized_vol = self.process_period(data=validation_data,
-                                                                                                actual_data=validation_actual,
-                                                                                                cov_matrix=cov_matrix,
-                                                                                                target_return=target_return,
-                                                                                                allow_short=allow_short)
-        self.test_pred_returns, self.test_realized_returns, self.test_pred_vol, self.test_realized_vol = self.process_period(data=test_data,
-                                                                                                    actual_data=test_actual,
-                                                                                                    cov_matrix=cov_matrix,
-                                                                                                    target_return=target_return,
-                                                                                                    allow_short=allow_short)
+        # Validation: optimize weights at each step (training mode)
+        self.val_pred_returns, self.val_realized_returns, self.val_pred_vol, self.val_realized_vol = self.process_period(
+            data=validation_data, actual_data=validation_actual,
+            cov_matrix=cov_matrix, target_return=target_return, allow_short=allow_short,
+            training=True)
+
+        # Test: use fixed weights from the last validation step (eval mode — no re-optimization)
+        self.test_pred_returns, self.test_realized_returns, self.test_pred_vol, self.test_realized_vol = self.process_period(
+            data=test_data, actual_data=test_actual,
+            cov_matrix=cov_matrix, target_return=target_return, allow_short=allow_short,
+            training=False)
 
         #print(self.val_pred_returns, self.val_realized_returns, self.val_pred_vol, self.val_realized_vol)
         #print(self.test_pred_returns, self.test_realized_returns, self.test_pred_vol, self.test_realized_vol)
@@ -268,16 +462,16 @@ class Portfolio():
         self.test_sum_pred_returns = np.sum(self.test_pred_returns)
         self.test_sum_realized_returns = np.sum(self.test_realized_returns)
 
-        print(f"Validation Return Accuracy: {self.val_return_accuracy}")
-        print(f"Validation Volatility Accuracy: {self.val_volatility_accuracy}")
-        print(f"Validation Sharpe Ratio Deviation: {self.val_sharpe_deviation}")
-        print(f"Validation Pred Return Sum: {self.val_sum_pred_returns}")
-        print(f"Validation Actual Return Sum: {self.val_sum_realized_returns}")
+        logger.info(f"Validation Return Accuracy: {self.val_return_accuracy}")
+        logger.info(f"Validation Volatility Accuracy: {self.val_volatility_accuracy}")
+        logger.info(f"Validation Sharpe Ratio Deviation: {self.val_sharpe_deviation}")
+        logger.info(f"Validation Pred Return Sum: {self.val_sum_pred_returns}")
+        logger.info(f"Validation Actual Return Sum: {self.val_sum_realized_returns}")
 
-        print(f"Test Return Accuracy: {self.test_return_accuracy}")
-        print(f"Test Volatility Accuracy: {self.test_volatility_accuracy}")
-        print(f"Test Sharpe Ratio Deviation: {self.test_sharpe_deviation}")
-        print(f"Test Pred Return Sum: {self.test_sum_pred_returns}")
-        print(f"Test Actual Return Sum: {self.test_sum_realized_returns}")
+        logger.info(f"Test Return Accuracy: {self.test_return_accuracy}")
+        logger.info(f"Test Volatility Accuracy: {self.test_volatility_accuracy}")
+        logger.info(f"Test Sharpe Ratio Deviation: {self.test_sharpe_deviation}")
+        logger.info(f"Test Pred Return Sum: {self.test_sum_pred_returns}")
+        logger.info(f"Test Actual Return Sum: {self.test_sum_realized_returns}")
 
         #return val_return_accuracy, val_volatility_accuracy, val_sharpe_deviation, np.sum(val_pred_vol), np.sum(val_realized_returns), test_return_accuracy, test_volatility_accuracy, test_sharpe_deviation, np.sum(test_pred_vol), np.sum(test_realized_returns)
