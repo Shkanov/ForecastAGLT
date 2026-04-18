@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+import config
 from logging_config import get_logger
 from gmdh import CriterionType, PolynomialType
 from models.experiment_core import (
@@ -98,11 +99,11 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     lstm_model, history = train_lstm(
         X_train, y_train, X_test, y_test,
         seed=seed,
-        lstm_units=10,
-        epochs=100,
-        batch_size=32,
-        patience=30,
-        verbose=False
+        lstm_units=config.LSTM_CONFIG['units'],
+        epochs=config.LSTM_CONFIG['epochs'],
+        batch_size=config.LSTM_CONFIG['batch_size'],
+        patience=config.LSTM_CONFIG['patience'],
+        verbose=config.LSTM_CONFIG['verbose']
     )
 
     # Train SARIMA model
@@ -112,25 +113,29 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
     arima_model = train_sarima(
         train_data_scaled,
         time_step_backward=time_step_backward,
-        seasonal=True,
-        m=12,
-        trace=True
+        seasonal=config.SARIMA_CONFIG['seasonal'],
+        m=config.SARIMA_CONFIG['m'],
+        trace=config.SARIMA_CONFIG['trace']
     )
     logger.info(f"ARIMA model summary:\n{arima_model.summary()}")
+
+    # Maps to convert config string names to gmdh enum values
+    _criterion_map = {'REGULARITY': CriterionType.REGULARITY}
+    _poly_map = {'LINEAR': PolynomialType.LINEAR, 'QUADRATIC': PolynomialType.QUADRATIC}
 
     # Build hyperparams dict for each model (used later for refit on all data)
     model_hyperparams = {
         'LSTM': {
             'seed': seed,
-            'lstm_units': 10,
-            'epochs': 100,
-            'batch_size': 32,
-            'patience': 30,
+            'lstm_units': config.LSTM_CONFIG['units'],
+            'epochs': config.LSTM_CONFIG['epochs'],
+            'batch_size': config.LSTM_CONFIG['batch_size'],
+            'patience': config.LSTM_CONFIG['patience'],
         },
         'SARIMA': {
-            'seasonal': True,
-            'm': 12,
-            'trace': True,
+            'seasonal': config.SARIMA_CONFIG['seasonal'],
+            'm': config.SARIMA_CONFIG['m'],
+            'trace': config.SARIMA_CONFIG['trace'],
         },
     }
 
@@ -141,44 +146,30 @@ def experiment(ticker, num_scale_steps, scaling_strategy, time_step_backward):
         logger.info("Training GMDH models...")
         gmdh_params = {
             'algorithms': {
-                'GMDH_1': {
-                    'type': 'Multi',
-                    'criterion': CriterionType.REGULARITY,
-                    'p_average': 1,
-                    'limit': 0.,
-                    'k_best': 1,
-                    'polynomial_type': PolynomialType.LINEAR
-                },
-                'GMDH_2': {
-                    'type': 'Ria',
-                    'criterion': CriterionType.REGULARITY,
-                    'p_average': 1,
-                    'limit': 0.,
-                    'k_best': 3,
-                    'polynomial_type': PolynomialType.QUADRATIC
+                name: {
+                    'type': cfg['type'],
+                    'criterion': _criterion_map[cfg['criterion_type']],
+                    'p_average': cfg['p_average'],
+                    'limit': cfg['limit'],
+                    'k_best': cfg['k_best'],
+                    'polynomial_type': _poly_map[cfg['polynomial_type']],
                 }
+                for name, cfg in config.GMDH_CONFIGS.items()
             }
         }
         gmdh_models = train_gmdh_models(X_train_gmdh, y_train, gmdh_params)
         for name, model in gmdh_models.items():
             logger.info(f"{name}: {model.get_best_polynomial()}")
         models_dict.update(gmdh_models)
-        model_hyperparams['GMDH_1'] = {
-            'type': 'Multi',
-            'criterion': CriterionType.REGULARITY,
-            'p_average': 1,
-            'limit': 0.,
-            'k_best': 1,
-            'polynomial_type': PolynomialType.LINEAR,
-        }
-        model_hyperparams['GMDH_2'] = {
-            'type': 'Ria',
-            'criterion': CriterionType.REGULARITY,
-            'p_average': 1,
-            'limit': 0.,
-            'k_best': 3,
-            'polynomial_type': PolynomialType.QUADRATIC,
-        }
+        for name, cfg in config.GMDH_CONFIGS.items():
+            model_hyperparams[name] = {
+                'type': cfg['type'],
+                'criterion': _criterion_map[cfg['criterion_type']],
+                'p_average': cfg['p_average'],
+                'limit': cfg['limit'],
+                'k_best': cfg['k_best'],
+                'polynomial_type': _poly_map[cfg['polynomial_type']],
+            }
 
     # Load Transformer pipeline if needed
     if transformer:

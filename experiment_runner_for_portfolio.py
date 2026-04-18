@@ -321,12 +321,13 @@ class DataLoader():
         import pandas as pd
         from experiment_runner_for_best_models import refit_for_forecast
 
-        # Step 1: Build actual returns df from already-stored close_stock
-        actual_series = {
-            t: self.tickers_dict[t]['close_stock'].set_index('Date')['Close']
+        # Step 1: Build actual returns df from already-stored close_stock.
+        # Use inner join on Date so only dates present for ALL tickers are kept.
+        actual_series = [
+            self.tickers_dict[t]['close_stock'].set_index('Date')['Close'].rename(t)
             for t in self.selected_features
-        }
-        actual_returns_df = pd.DataFrame(actual_series).dropna()
+        ]
+        actual_returns_df = pd.concat(actual_series, axis=1, join='inner')
 
         # Step 2: Re-run correlation filtering on actual returns
         forward_features = [self.selected_features[0]]
@@ -453,84 +454,6 @@ class DataLoader():
             rec['weight'] = round(float(weight_map.get(rec['ticker'], 0.0)), 4)
 
         return recommendations
-
-    def forecast_forward(self):
-        """
-        Make a 1-step-ahead log return forecast for each selected ticker using
-        the best-performing model (lowest test MAE), then compute buy/sell
-        recommendations and limit prices.
-
-        Limit price = latest_absolute_price * exp(predicted_log_return)
-
-        Returns:
-            list of dicts with keys: ticker, model, predicted_log_return,
-                                     current_price, limit_price, action
-        """
-        import torch
-
-        recommendations = []
-        for ticker in self.selected_features:
-            close_stock  = self.tickers_dict[ticker]['close_stock']
-            scaler       = self.tickers_dict[ticker]['scaler']
-            models_dict  = self.tickers_dict[ticker]['models_dict']
-            metrics_df   = self.tickers_dict[ticker]['metrics_df']
-            maindf       = self.tickers_dict[ticker]['maindf']
-
-            # Latest absolute price from the raw (pre-log-return) data
-            current_price = float(maindf['Close'].dropna().iloc[-1])
-
-            # Best model by test MAE
-            best_model_name = metrics_df.T['Test data MAE'].idxmin()
-            model = models_dict[best_model_name]
-            logger.info(f"Forward forecast for {ticker} using {best_model_name}, current price: {current_price:.4f}")
-
-            # Last window of scaled log returns as features
-            last_window = scaler.transform(close_stock[['Close']].values[-self.time_step_backward:])
-
-            try:
-                if best_model_name == 'LSTM':
-                    X = last_window.reshape(1, self.time_step_backward, 1)
-                    pred_scaled = model.predict(X, verbose=0)
-                    pred_log_return = float(scaler.inverse_transform(pred_scaled)[0][0])
-
-                elif best_model_name == 'SARIMA':
-                    pred_scaled = model.predict(n_periods=1)
-                    pred_log_return = float(scaler.inverse_transform(np.array(pred_scaled).reshape(-1, 1))[0][0])
-
-                elif best_model_name.startswith('GMDH'):
-                    X = last_window.reshape(1, -1)
-                    pred_scaled = model.predict(X)
-                    pred_log_return = float(scaler.inverse_transform(np.array(pred_scaled).reshape(-1, 1))[0][0])
-
-                elif best_model_name == 'Transformer':
-                    X = torch.tensor(last_window.reshape(1, -1))
-                    forecast = model.predict(X, 1, num_samples=3, temperature=1.0, top_k=50, top_p=1.0)
-                    pred_scaled = np.quantile(forecast.numpy(), 0.5, axis=1)[:, -1]
-                    pred_log_return = float(scaler.inverse_transform(pred_scaled.reshape(-1, 1))[0][0])
-
-                else:
-                    logger.warning(f"Unknown model {best_model_name} for {ticker}, skipping.")
-                    continue
-
-                limit_price = current_price * np.exp(pred_log_return)
-                action = 'BUY' if pred_log_return > 0 else 'SELL'
-
-                recommendations.append({
-                    'ticker':             ticker,
-                    'model':              best_model_name,
-                    'predicted_log_return': pred_log_return,
-                    'current_price':      current_price,
-                    'limit_price':        limit_price,
-                    'action':             action,
-                })
-                logger.info(f"  {action}: log_return={pred_log_return:.6f}, "
-                            f"current={current_price:.4f}, limit={limit_price:.4f}")
-
-            except Exception as e:
-                logger.error(f"Forward forecast failed for {ticker} ({best_model_name}): {e}")
-
-        return recommendations
-
 
 class Portfolio():
 
