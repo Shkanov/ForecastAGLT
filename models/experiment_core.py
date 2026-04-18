@@ -71,6 +71,10 @@ def load_crypto_data(ticker: str, interval: str = config.DEFAULT_INTERVAL) -> pd
         if len(maindf) == 0:
             raise ValueError(f"No data downloaded for {ticker}-USD with interval {interval}")
 
+        # yfinance >=0.2.38 returns MultiIndex columns like ('Close', 'BTC-USD') — flatten them
+        if isinstance(maindf.columns, pd.MultiIndex):
+            maindf.columns = maindf.columns.get_level_values(0)
+
         logger.info(f"Successfully downloaded {len(maindf)} rows for {ticker}-USD")
 
     except (FileNotFoundError, ValueError, ConnectionError) as e:
