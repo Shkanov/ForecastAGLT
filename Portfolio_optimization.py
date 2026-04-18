@@ -1,4 +1,6 @@
 import streamlit as st
+import pandas as pd
+import numpy as np
 
 from experiment_runner_for_portfolio import DataLoader, Portfolio
 from sidebar_portfolio import sidebar
@@ -69,4 +71,24 @@ if run:
         st.write(f"Test Sharpe Ratio Deviation: {portfolio.test_sharpe_deviation:.4f}")
         st.write(f"Test Pred Return Sum: {portfolio.test_sum_pred_returns:.4f}")
         st.write(f"Test Actual Return Sum: {portfolio.test_sum_realized_returns:.4f}")
+
+    st.header('Forward-Looking Portfolio Recommendations')
+    st.write(
+        'Models are refit on all available data. '
+        'Covariance is recomputed from actual log returns. '
+        'Tickers are re-filtered for collinearity before optimization.'
+    )
+    with st.spinner('Refitting models and generating recommendations...'):
+        recommendations = dataloader.refit_and_forecast(
+            target_return=sidebar_dict['target_return'],
+            allow_short=sidebar_dict['allow_short']
+        )
+
+    if recommendations:
+        rec_df = pd.DataFrame(recommendations)[
+            ['ticker', 'model', 'action', 'weight', 'current_price', 'predicted_log_return', 'limit_price']
+        ]
+        st.dataframe(rec_df, use_container_width=True)
+    else:
+        st.warning('No recommendations could be generated.')
 

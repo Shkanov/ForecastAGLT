@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 
 # For data preprocessing
-from sklearn.preprocessing import MinMaxScaler
 
 # For plotting
 import matplotlib.pyplot as plt
@@ -18,6 +17,7 @@ from models.experiment_core import (
     prepare_train_test_data,
     train_lstm,
     train_sarima,
+    train_gmdh_models,
     get_chronos_pipeline,
     make_all_predictions,
     calculate_all_metrics,
@@ -36,8 +36,11 @@ st.set_page_config(
     page_title="Model optimization",
     page_icon="📈")
 
-# Use the shared pipeline function
-pipeline = get_chronos_pipeline(cache=True)
+@st.cache_resource
+def load_chronos_pipeline():
+    return get_chronos_pipeline()
+
+pipeline = load_chronos_pipeline()
 seed = 42
 st.title("Daily price prediction")
 tickers = ['BTC', 'ETH', 'BNB', #'USDC',
@@ -99,10 +102,11 @@ y_overall = preprocess_data(y_overall, num_scale_steps, scaling_strategy, scale_
 #names = cycle(['Stock Open Price','Stock Close Price','Stock High Price','Stock Low Price'])
 fig, ax = plt.subplots()
 #ax.plot(y_overall.Date, y_overall['Close'], label = 'Stock Close Price')
-ax.plot(y_overall['Close'], label = 'Stock Close Price')
+ax.plot(y_overall['Close'], label='Log Return')
 
 ax.legend()
-ax.set_title(f'Динамика цены закрытия для {ticker}')
+ax.set_ylabel("Log Return")
+ax.set_title(f'Log return dynamics for {ticker}')
 
 #st.image(fig)
 st.pyplot(fig)
@@ -184,12 +188,12 @@ if train:
     X_train_gmdh = X_train.copy()
     X_test_gmdh = X_test.copy()
 
-    # Get scaled data for recursive predictions
-    closedf_for_recursive = close_stock[['Close']].iloc[-1000:]
-    scaler_for_recursive = MinMaxScaler(feature_range=(0, 1))
+    # Get scaled data for recursive predictions using the same scaler as the main pipeline
+    # (close_stock already has ≤1000 samples from prepare_train_test_data)
+    closedf_for_recursive = close_stock[['Close']]
     training_size = int(len(closedf_for_recursive) * 0.70)
-    train_data = scaler_for_recursive.fit_transform(closedf_for_recursive[:training_size])
-    test_data = scaler_for_recursive.transform(closedf_for_recursive[training_size:])
+    train_data = scaler.transform(closedf_for_recursive[:training_size])
+    test_data = scaler.transform(closedf_for_recursive[training_size:])
 
     my_bar.progress(40 + 1, text='Data prepared -> Training LSTM model')
 
@@ -217,7 +221,6 @@ if train:
     st.text(arima_model.summary())
 
     if GMDH:
-        from models.experiment_core import train_gmdh_models
         gmdh_params = {
             'algorithms': {
                 'GMDH': {
@@ -297,16 +300,16 @@ if train:
 
     # Create comparison plot
     fig, ax = plt.subplots()
-    ax.plot(plotdf['date'], plotdf['original_close'], label='Оригинальная цена закрытия')
+    ax.plot(plotdf['date'], plotdf['original_close'], label='Actual log return')
 
     # Plot predictions for each model
     for model_name in predictions.keys():
         model_suffix = model_name.lower().replace(' ', '_')
         if f'train_predicted_close_{model_suffix}' in plotdf.columns:
             ax.plot(plotdf['date'], plotdf[f'train_predicted_close_{model_suffix}'],
-                    label=f'Предсказанная цена закрытия на тренировке {model_name}')
+                    label=f'Train predicted log return ({model_name})')
             ax.plot(plotdf['date'], plotdf[f'test_predicted_close_{model_suffix}'],
-                    label=f'Предсказанная цена закрытия на тесте {model_name}')
+                    label=f'Test predicted log return ({model_name})')
 
     ax.legend()
     ax.set_title("Сравнение исходных и смоделированных лог-доходностей")
@@ -319,18 +322,18 @@ if train:
 
     if recursive_pred:
         lst_output_arima = make_prediction_recursive(test_data=test_data, method='SARIMA', model=arima_model,
-                                                     scaler=scaler_for_recursive, pred_days=pred_days,
+                                                     scaler=scaler, pred_days=pred_days,
                                                      time_step_backward=time_step_backward)
         lst_output_lstm = make_prediction_recursive(test_data=test_data, method='LSTM', model=lstm_model,
-                                                    scaler=scaler_for_recursive, pred_days=pred_days,
+                                                    scaler=scaler, pred_days=pred_days,
                                                     time_step_backward=time_step_backward)
         if GMDH:
             lst_output_gmdh = make_prediction_recursive(test_data=test_data, method='GMDH', model=model_gmdh,
-                                                        scaler=scaler_for_recursive, pred_days=pred_days,
+                                                        scaler=scaler, pred_days=pred_days,
                                                         time_step_backward=time_step_backward)
         if transformer:
             lst_output_transformer = make_prediction_recursive(test_data=test_data, method='Transformer', model=pipeline,
-                                                               scaler=scaler_for_recursive, pred_days=pred_days,
+                                                               scaler=scaler, pred_days=pred_days,
                                                                time_step_backward=time_step_backward)
 
         last_days = np.arange(1, time_step_backward + 1)
@@ -392,20 +395,21 @@ if train:
                 })
         fig, ax = plt.subplots()
         ax.plot(new_pred_plot.index, new_pred_plot['last_original_days_value'],
-                label=f"Последние {time_step_backward} шагов цены закратия")
+                label=f"Last {time_step_backward} steps (actual log return)")
         ax.plot(new_pred_plot.index, new_pred_plot['next_predicted_days_value_arima'],
-                label=f"Предсказанные следующие {pred_days} шагов цены закрытия SARIMA")
+                label=f"Next {pred_days} predicted log returns (SARIMA)")
         ax.plot(new_pred_plot.index, new_pred_plot['next_predicted_days_value_lstm'],
-                label=f"Предсказанные следующие {pred_days} шагов цены закрытия LSTM")
+                label=f"Next {pred_days} predicted log returns (LSTM)")
         if GMDH:
             ax.plot(new_pred_plot.index, new_pred_plot['next_predicted_days_value_gmdh'],
-                    label=f"Предсказанные следующие {pred_days} шагов цены закрытия GMDH")
+                    label=f"Next {pred_days} predicted log returns (GMDH)")
         if transformer:
             ax.plot(new_pred_plot.index, new_pred_plot['next_predicted_days_value_transformer'],
-                    label=f"Предсказанные следующие {pred_days} шагов цены закрытия Transformer")
+                    label=f"Next {pred_days} predicted log returns (Transformer)")
         ax.legend()
-        ax.set_title(f"Сравнения последних {time_step_backward} шагов и следующих {pred_days} шагов")
-        ax.set_ylim(0, closedf_for_recursive['Close'].max() * 1.5)
+        ax.set_ylabel("Log Return")
+        ax.set_title(f"Last {time_step_backward} actual vs next {pred_days} predicted log returns")
+        # Auto-scale: log returns include negatives so do not force ylim to start at 0
         st.pyplot(fig)
         plt.close(fig)  # Explicitly close to prevent memory leaks
         #ax.plot()

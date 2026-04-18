@@ -117,7 +117,7 @@ def make_prediction_recursive(test_data: np.ndarray,
         test_data: Scaled test data array
         method: Model type to use for predictions
         model: Trained model instance
-        scaler: MinMaxScaler instance for inverse transformation
+        scaler: Scaler instance for inverse transformation (e.g. StandardScaler)
         pred_days: Number of days to predict into the future
         time_step_backward: Number of historical steps to use as features
 

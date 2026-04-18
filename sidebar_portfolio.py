@@ -12,9 +12,11 @@ def sidebar():
     else:
         scaling_strategy = 'average_returns'  # default, ignored downstream (daily log returns)
     target_return_expander = st.sidebar.expander('Задать целевую доходность')
-    target_return = target_return_expander.slider('Уровень доходности, %', 1, 100, None)
-    if target_return:
-        target_return *= 0.01
+    use_target_return = target_return_expander.checkbox('Задать целевую доходность')
+    if use_target_return:
+        target_return = target_return_expander.slider('Уровень доходности, %', 1, 100, 10) * 0.01
+    else:
+        target_return = None
     time_step_backward = st.sidebar.slider('Количество предикторов, дней', 1, 100, 15)
     allow_short = st.sidebar.checkbox('Разрешить короткие позиции')
 
