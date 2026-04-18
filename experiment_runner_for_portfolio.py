@@ -71,6 +71,7 @@ class DataLoader():
             return False
 
     def experiment_data(self, top_n: int = 3, num_scale_steps: int = 1, scaling_strategy: str = 'average', time_step_backward: int = 15):
+        self.time_step_backward = time_step_backward
         # Retrieve top N tickers
         #top_n = 10
         self.tickers = self.get_top_crypto_tickers(top_n)
@@ -84,11 +85,16 @@ class DataLoader():
         for ticker in self.valid_tickers:
             try:
                 self.tickers_dict[ticker] = {}
-                plot_df, metrics_df, models_dict = experiment(ticker=ticker, num_scale_steps=num_scale_steps,
-                                                              scaling_strategy=scaling_strategy, time_step_backward=time_step_backward)
+                plot_df, metrics_df, models_dict, close_stock, scaler, maindf, model_hyperparams = experiment(
+                    ticker=ticker, num_scale_steps=num_scale_steps,
+                    scaling_strategy=scaling_strategy, time_step_backward=time_step_backward)
                 self.tickers_dict[ticker]['plot_df'] = plot_df
                 self.tickers_dict[ticker]['metrics_df'] = metrics_df
                 self.tickers_dict[ticker]['models_dict'] = models_dict
+                self.tickers_dict[ticker]['close_stock'] = close_stock
+                self.tickers_dict[ticker]['scaler'] = scaler
+                self.tickers_dict[ticker]['maindf'] = maindf
+                self.tickers_dict[ticker]['model_hyperparams'] = model_hyperparams
             except AssertionError as e:  # Или другой конкретный тип ошибки
                 logger.error(f'EXCEPTION {str(e)} {ticker}')
                 self.invalid_tickers.append(ticker)
@@ -297,6 +303,234 @@ class DataLoader():
 
         return self.cov_matrix, self.validation_data, self.validation_actual, self.test_data, self.test_actual, self.train_predictions_df_list, self.actual_prices_train, self.test_predictions_df_list, self.actual_prices_test, self.tickers_dict
 
+    def refit_and_forecast(self, target_return=None, allow_short=False):
+        """
+        Refit the best model per ticker on ALL available data, re-run correlation
+        filtering on actual log returns, recompute covariance, make a 1-step-ahead
+        forecast, optimize portfolio weights, and return buy/sell recommendations.
+
+        Args:
+            target_return: Target portfolio return for optimization (optional)
+            allow_short: Whether to allow short positions
+
+        Returns:
+            List of recommendation dicts with keys:
+                ticker, model, predicted_log_return, current_price, limit_price, action, weight
+        """
+        import torch
+        import pandas as pd
+        from experiment_runner_for_best_models import refit_for_forecast
+
+        # Step 1: Build actual returns df from already-stored close_stock
+        actual_series = {
+            t: self.tickers_dict[t]['close_stock'].set_index('Date')['Close']
+            for t in self.selected_features
+        }
+        actual_returns_df = pd.DataFrame(actual_series).dropna()
+
+        # Step 2: Re-run correlation filtering on actual returns
+        forward_features = [self.selected_features[0]]
+        for ticker in self.selected_features[1:]:
+            correlations = [
+                abs(actual_returns_df[ticker].corr(actual_returns_df[s]))
+                for s in forward_features
+            ]
+            if max(correlations) < self.correlation_threshold:
+                forward_features.append(ticker)
+            else:
+                logger.info(f"Dropped {ticker} from forward portfolio (actual return correlation too high)")
+
+        logger.info(f"Forward features after correlation filter: {forward_features}")
+
+        # Step 3: Refit best model per ticker (reuses existing close_stock — no re-download)
+        refitted = {}
+        for ticker in forward_features:
+            metrics_df        = self.tickers_dict[ticker]['metrics_df']
+            close_stock       = self.tickers_dict[ticker]['close_stock']
+            model_hyperparams = self.tickers_dict[ticker]['model_hyperparams']
+            best_model_name   = metrics_df.T['Test data MAE'].idxmin()
+            hp                = model_hyperparams.get(best_model_name, {})
+
+            logger.info(f"Refitting {best_model_name} for {ticker}...")
+            try:
+                model, scaler = refit_for_forecast(
+                    close_stock=close_stock,
+                    model_name=best_model_name,
+                    model_hyperparams=hp,
+                    time_step_backward=self.time_step_backward
+                )
+            except Exception as e:
+                logger.error(f"Refit failed for {ticker} ({best_model_name}): {e}. Using simulation model.")
+                model  = self.tickers_dict[ticker]['models_dict'][best_model_name]
+                scaler = self.tickers_dict[ticker]['scaler']
+
+            refitted[ticker] = {
+                'model': model,
+                'scaler': scaler,
+                'best_model_name': best_model_name,
+            }
+
+        # Step 4: Make 1-step-ahead prediction with each refitted model
+        predicted_returns = {}
+        recommendations   = []
+
+        for ticker in forward_features:
+            r               = refitted[ticker]
+            model           = r['model']
+            scaler          = r['scaler']
+            best_model_name = r['best_model_name']
+            close_stock     = self.tickers_dict[ticker]['close_stock']
+            maindf          = self.tickers_dict[ticker]['maindf']
+
+            current_price = float(maindf['Close'].dropna().iloc[-1])
+            last_window   = scaler.transform(close_stock[['Close']].values[-self.time_step_backward:])
+
+            try:
+                if best_model_name == 'LSTM':
+                    X = last_window.reshape(1, self.time_step_backward, 1)
+                    pred_scaled     = model.predict(X, verbose=0)
+                    pred_log_return = float(scaler.inverse_transform(pred_scaled)[0][0])
+
+                elif best_model_name == 'SARIMA':
+                    pred_scaled     = model.predict(n_periods=1)
+                    pred_log_return = float(scaler.inverse_transform(
+                        np.array(pred_scaled).reshape(-1, 1))[0][0])
+
+                elif best_model_name.startswith('GMDH'):
+                    X = last_window.reshape(1, -1)
+                    pred_scaled     = model.predict(X)
+                    pred_log_return = float(scaler.inverse_transform(
+                        np.array(pred_scaled).reshape(-1, 1))[0][0])
+
+                elif best_model_name == 'Transformer':
+                    X        = torch.tensor(last_window.reshape(1, -1))
+                    forecast = model.predict(X, 1, num_samples=3,
+                                             temperature=1.0, top_k=50, top_p=1.0)
+                    pred_scaled     = np.quantile(forecast.numpy(), 0.5, axis=1)[:, -1]
+                    pred_log_return = float(scaler.inverse_transform(
+                        pred_scaled.reshape(-1, 1))[0][0])
+
+                else:
+                    logger.warning(f"Unknown model {best_model_name} for {ticker}, skipping.")
+                    continue
+
+                predicted_returns[ticker] = pred_log_return
+                limit_price = current_price * np.exp(pred_log_return)
+                action      = 'BUY' if pred_log_return > 0 else 'SELL'
+
+                recommendations.append({
+                    'ticker':               ticker,
+                    'model':                best_model_name,
+                    'predicted_log_return': round(pred_log_return, 6),
+                    'current_price':        round(current_price, 4),
+                    'limit_price':          round(limit_price, 4),
+                    'action':               action,
+                    'weight':               0.0,  # filled after optimization
+                })
+                logger.info(f"  {ticker} {action}: log_return={pred_log_return:.6f}, "
+                            f"current={current_price:.4f}, limit={limit_price:.4f}")
+
+            except Exception as e:
+                logger.error(f"Forward forecast failed for {ticker} ({best_model_name}): {e}")
+
+        # Step 5: Optimize portfolio weights using actual cov of tickers that have predictions
+        tickers_with_pred = [t for t in forward_features if t in predicted_returns]
+        if not tickers_with_pred:
+            logger.warning("No valid predictions — skipping portfolio optimization.")
+            return recommendations
+
+        pred_arr   = np.array([predicted_returns[t] for t in tickers_with_pred])
+        cov_matrix = actual_returns_df[tickers_with_pred].cov().values
+        if np.any(np.linalg.eigvals(cov_matrix) <= 0):
+            cov_matrix = cov_matrix + np.eye(len(tickers_with_pred)) * 1e-8
+
+        portfolio = Portfolio()
+        weights   = portfolio.optimize(pred_arr, cov_matrix,
+                                       target_return=target_return, allow_short=allow_short)
+
+        weight_map = dict(zip(tickers_with_pred, weights))
+        for rec in recommendations:
+            rec['weight'] = round(float(weight_map.get(rec['ticker'], 0.0)), 4)
+
+        return recommendations
+
+    def forecast_forward(self):
+        """
+        Make a 1-step-ahead log return forecast for each selected ticker using
+        the best-performing model (lowest test MAE), then compute buy/sell
+        recommendations and limit prices.
+
+        Limit price = latest_absolute_price * exp(predicted_log_return)
+
+        Returns:
+            list of dicts with keys: ticker, model, predicted_log_return,
+                                     current_price, limit_price, action
+        """
+        import torch
+
+        recommendations = []
+        for ticker in self.selected_features:
+            close_stock  = self.tickers_dict[ticker]['close_stock']
+            scaler       = self.tickers_dict[ticker]['scaler']
+            models_dict  = self.tickers_dict[ticker]['models_dict']
+            metrics_df   = self.tickers_dict[ticker]['metrics_df']
+            maindf       = self.tickers_dict[ticker]['maindf']
+
+            # Latest absolute price from the raw (pre-log-return) data
+            current_price = float(maindf['Close'].dropna().iloc[-1])
+
+            # Best model by test MAE
+            best_model_name = metrics_df.T['Test data MAE'].idxmin()
+            model = models_dict[best_model_name]
+            logger.info(f"Forward forecast for {ticker} using {best_model_name}, current price: {current_price:.4f}")
+
+            # Last window of scaled log returns as features
+            last_window = scaler.transform(close_stock[['Close']].values[-self.time_step_backward:])
+
+            try:
+                if best_model_name == 'LSTM':
+                    X = last_window.reshape(1, self.time_step_backward, 1)
+                    pred_scaled = model.predict(X, verbose=0)
+                    pred_log_return = float(scaler.inverse_transform(pred_scaled)[0][0])
+
+                elif best_model_name == 'SARIMA':
+                    pred_scaled = model.predict(n_periods=1)
+                    pred_log_return = float(scaler.inverse_transform(np.array(pred_scaled).reshape(-1, 1))[0][0])
+
+                elif best_model_name.startswith('GMDH'):
+                    X = last_window.reshape(1, -1)
+                    pred_scaled = model.predict(X)
+                    pred_log_return = float(scaler.inverse_transform(np.array(pred_scaled).reshape(-1, 1))[0][0])
+
+                elif best_model_name == 'Transformer':
+                    X = torch.tensor(last_window.reshape(1, -1))
+                    forecast = model.predict(X, 1, num_samples=3, temperature=1.0, top_k=50, top_p=1.0)
+                    pred_scaled = np.quantile(forecast.numpy(), 0.5, axis=1)[:, -1]
+                    pred_log_return = float(scaler.inverse_transform(pred_scaled.reshape(-1, 1))[0][0])
+
+                else:
+                    logger.warning(f"Unknown model {best_model_name} for {ticker}, skipping.")
+                    continue
+
+                limit_price = current_price * np.exp(pred_log_return)
+                action = 'BUY' if pred_log_return > 0 else 'SELL'
+
+                recommendations.append({
+                    'ticker':             ticker,
+                    'model':              best_model_name,
+                    'predicted_log_return': pred_log_return,
+                    'current_price':      current_price,
+                    'limit_price':        limit_price,
+                    'action':             action,
+                })
+                logger.info(f"  {action}: log_return={pred_log_return:.6f}, "
+                            f"current={current_price:.4f}, limit={limit_price:.4f}")
+
+            except Exception as e:
+                logger.error(f"Forward forecast failed for {ticker} ({best_model_name}): {e}")
+
+        return recommendations
+
 
 class Portfolio():
 
@@ -327,9 +561,13 @@ class Portfolio():
         )
         return result.x
 
-    def process_period(self, data, actual_data, cov_matrix, target_return=None, allow_short=False, training=True):
+    def process_period(self, data, actual_data, cov_matrix, target_return=None, allow_short=False):
         """
-        Process a period for portfolio evaluation.
+        Process a period for portfolio evaluation using rolling re-optimization.
+
+        At each step T, weights are optimized using predicted returns for T+1,
+        then applied to realize actual returns at T+1. This reflects real portfolio
+        management where weights are always re-optimized on the latest predictions.
 
         Both 'data' and 'actual_data' contain log returns (output of preprocess_data).
 
@@ -339,8 +577,6 @@ class Portfolio():
             cov_matrix: Covariance matrix of returns
             target_return: Target return for optimization (optional)
             allow_short: Whether to allow short positions
-            training: If True, re-optimize weights at each step (validation mode).
-                      If False, use self.weights fixed from the last training step (test mode).
 
         Returns:
             Tuple of (predicted_returns, realized_returns, predicted_volatilities, realized_volatilities)
@@ -360,12 +596,10 @@ class Portfolio():
             predicted_return = current_data.drop(columns=['date']).iloc[1]      # predicted log return at T+1
             realized_return = actual_current_data.drop(columns=['date']).iloc[1] # actual log return at T+1
 
-            if training:
-                # Validation mode: optimize weights at each step using predicted returns
-                self.weights = self.optimize(predicted_return, cov_matrix, target_return=target_return,
-                                             allow_short=allow_short)
+            # Re-optimize weights at every step using predicted returns for T+1
+            self.weights = self.optimize(predicted_return, cov_matrix, target_return=target_return,
+                                         allow_short=allow_short)
 
-            # Eval mode: self.weights is fixed from the last training step — do not re-optimize
             pred_return, pred_volatility = self.calculate_portfolio_metrics(
                 weights=self.weights, returns=predicted_return, cov_matrix=cov_matrix)
             real_return, real_volatility = self.calculate_portfolio_metrics(
@@ -434,20 +668,15 @@ class Portfolio():
 
     def optimize_portfolio(self, cov_matrix, validation_data, validation_actual, test_data, test_actual, target_return: float | None = None, allow_short: bool = False):
 
-        # Validation: optimize weights at each step (training mode)
+        # Both periods use rolling re-optimization: weights are re-computed at each step T
+        # using predicted returns for T+1, then applied to realize actual returns at T+1.
         self.val_pred_returns, self.val_realized_returns, self.val_pred_vol, self.val_realized_vol = self.process_period(
             data=validation_data, actual_data=validation_actual,
-            cov_matrix=cov_matrix, target_return=target_return, allow_short=allow_short,
-            training=True)
+            cov_matrix=cov_matrix, target_return=target_return, allow_short=allow_short)
 
-        # Test: use fixed weights from the last validation step (eval mode — no re-optimization)
         self.test_pred_returns, self.test_realized_returns, self.test_pred_vol, self.test_realized_vol = self.process_period(
             data=test_data, actual_data=test_actual,
-            cov_matrix=cov_matrix, target_return=target_return, allow_short=allow_short,
-            training=False)
-
-        #print(self.val_pred_returns, self.val_realized_returns, self.val_pred_vol, self.val_realized_vol)
-        #print(self.test_pred_returns, self.test_realized_returns, self.test_pred_vol, self.test_realized_vol)
+            cov_matrix=cov_matrix, target_return=target_return, allow_short=allow_short)
 
 
         self.val_return_accuracy = self.calculate_accuracy(self.val_pred_returns, self.val_realized_returns)
