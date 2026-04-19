@@ -22,9 +22,9 @@ def sidebar():
     allow_short = st.sidebar.checkbox('Разрешить короткие позиции')
 
     sig_expander = st.sidebar.expander('Signal significance settings')
-    clt_z_score = sig_expander.slider(
-        'CLT z-score threshold', min_value=1.0, max_value=3.0, value=config.CLT_Z_SCORE, step=0.01,
-        help='|pred| must exceed this many residual std devs to be actionable (~95% CI at 1.96)')
+    clt_significance = sig_expander.slider(
+        'CLT significance level (α)', min_value=0.01, max_value=0.20, value=config.CLT_SIGNIFICANCE_LEVEL, step=0.01,
+        help='α=0.05 → 95% CI, α=0.01 → 99% CI. Lower α = stricter filter.')
     volatility_z_score = sig_expander.slider(
         'Volatility z-score threshold', min_value=0.5, max_value=4.0, value=config.VOLATILITY_Z_SCORE, step=0.1,
         help='|pred| / rolling_σ must exceed this value')
@@ -38,7 +38,7 @@ def sidebar():
             'target_return': target_return,
             'time_step_backward': time_step_backward,
             'allow_short': allow_short,
-            'clt_z_score': clt_z_score,
+            'clt_significance': clt_significance,
             'volatility_z_score': volatility_z_score,
             'ci_alpha': ci_alpha}
 

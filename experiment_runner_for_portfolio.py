@@ -16,6 +16,7 @@ from datetime import datetime
 from tqdm import tqdm
 import numpy as np
 import scipy.optimize as sco
+from scipy.stats import norm
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -305,7 +306,7 @@ class DataLoader():
         return self.cov_matrix, self.validation_data, self.validation_actual, self.test_data, self.test_actual, self.train_predictions_df_list, self.actual_prices_train, self.test_predictions_df_list, self.actual_prices_test, self.tickers_dict
 
     def refit_and_forecast(self, target_return=None, allow_short=False,
-                           clt_z_score=None, volatility_z_score=None, ci_alpha=None):
+                           clt_significance=None, volatility_z_score=None, ci_alpha=None):
         """
         Refit the best model per ticker on ALL available data, re-run correlation
         filtering on actual log returns, recompute covariance, make a 1-step-ahead
@@ -314,7 +315,8 @@ class DataLoader():
         Args:
             target_return: Target portfolio return for optimization (optional)
             allow_short: Whether to allow short positions
-            clt_z_score: CLT significance threshold (defaults to config.CLT_Z_SCORE)
+            clt_significance: CLT significance level α (defaults to config.CLT_SIGNIFICANCE_LEVEL).
+                              Converted to z-score internally: z = norm.ppf(1 - α/2).
             volatility_z_score: Volatility z-score threshold (defaults to config.VOLATILITY_Z_SCORE)
             ci_alpha: CI alpha for SARIMA and Chronos (defaults to config.SARIMA_CI_ALPHA)
 
@@ -322,9 +324,11 @@ class DataLoader():
             List of recommendation dicts with keys:
                 ticker, model, predicted_log_return, current_price, limit_price, action, weight
         """
-        clt_z_score        = clt_z_score        if clt_z_score        is not None else config.CLT_Z_SCORE
+        clt_significance   = clt_significance   if clt_significance   is not None else config.CLT_SIGNIFICANCE_LEVEL
         volatility_z_score = volatility_z_score  if volatility_z_score is not None else config.VOLATILITY_Z_SCORE
         ci_alpha           = ci_alpha           if ci_alpha           is not None else config.SARIMA_CI_ALPHA
+
+        clt_z_score = norm.ppf(1 - clt_significance / 2)
 
         import torch
         import pandas as pd

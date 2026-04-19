@@ -85,7 +85,7 @@ if run:
         recommendations = dataloader.refit_and_forecast(
             target_return=sidebar_dict['target_return'],
             allow_short=sidebar_dict['allow_short'],
-            clt_z_score=sidebar_dict['clt_z_score'],
+            clt_significance=sidebar_dict['clt_significance'],
             volatility_z_score=sidebar_dict['volatility_z_score'],
             ci_alpha=sidebar_dict['ci_alpha'],
         )

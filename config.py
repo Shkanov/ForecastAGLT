@@ -124,7 +124,7 @@ STOP_LOSS_WINDOW = 20             # Rolling window (days) for σ estimation
 # Signal significance thresholds
 # A prediction must pass ALL applicable checks to be actionable (BUY/SELL).
 # Failing any check results in HOLD and exclusion from portfolio optimization.
-CLT_Z_SCORE = 1.96       # |pred| > CLT_Z_SCORE × residual_std  (~95% CI, all models)
+CLT_SIGNIFICANCE_LEVEL = 0.05  # α for CLT residual CI (0.05 → 95% CI, all models)
 VOLATILITY_Z_SCORE = 2.0 # |pred| / rolling_σ > VOLATILITY_Z_SCORE  (all models)
 SARIMA_CI_ALPHA = 0.05   # Native SARIMA prediction interval alpha  (SARIMA only)
 CHRONOS_CI_ALPHA = 0.05  # Chronos quantile CI alpha                 (Transformer only)
