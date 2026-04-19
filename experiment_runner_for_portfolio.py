@@ -97,8 +97,8 @@ class DataLoader():
                 self.tickers_dict[ticker]['scaler'] = scaler
                 self.tickers_dict[ticker]['maindf'] = maindf
                 self.tickers_dict[ticker]['model_hyperparams'] = model_hyperparams
-            except AssertionError as e:  # Или другой конкретный тип ошибки
-                logger.error(f'EXCEPTION {str(e)} {ticker}')
+            except (AssertionError, FileNotFoundError, ValueError, Exception) as e:
+                logger.error(f'Skipping {ticker}: {str(e)}')
                 self.invalid_tickers.append(ticker)
                 continue
 
