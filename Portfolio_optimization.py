@@ -2,8 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
+from logging_config import setup_logging
 from experiment_runner_for_portfolio import DataLoader, Portfolio
 from sidebar_portfolio import sidebar
+
+setup_logging()
 
 
 st.set_page_config(
