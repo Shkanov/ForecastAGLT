@@ -461,31 +461,33 @@ class DataLoader():
                 vol_ok = abs(pred_log_return) / (sigma + 1e-10) > volatility_z_score
                 is_significant = clt_ok and vol_ok and model_ci_ok
 
-                action = ('BUY' if pred_log_return > 0 else 'SELL') if is_significant else 'HOLD'
+                action = 'BUY' if pred_log_return > 0 else 'SELL'
                 logger.info(f"  {ticker} significance: CLT={clt_ok} "
                             f"(|pred|={abs(pred_log_return):.6f} vs {clt_z_score}×σ_res={clt_z_score*residual_std:.6f}), "
                             f"vol={vol_ok} (z={abs(pred_log_return)/(sigma+1e-10):.2f}), "
-                            f"model_ci={model_ci_ok} → {action}")
+                            f"model_ci={model_ci_ok} → action={action}, significant={is_significant}")
 
-                # Only include in portfolio optimization if signal is significant
-                if is_significant:
-                    predicted_returns[ticker] = pred_log_return
+                # Always include in portfolio optimization; significance flags are informational
+                predicted_returns[ticker] = pred_log_return
 
-                limit_price     = current_price * np.exp(pred_log_return)
-                stop_loss_price = current_price * np.exp(-config.STOP_LOSS_SIGMA_MULTIPLIER * sigma)
+                take_profit_price = current_price * np.exp(pred_log_return)
+                stop_loss_price   = current_price * np.exp(-config.STOP_LOSS_SIGMA_MULTIPLIER * sigma)
 
                 recommendations.append({
                     'ticker':               ticker,
                     'model':                best_model_name,
-                    'predicted_log_return': round(pred_log_return, 6),
-                    'current_price':        round(current_price, 4),
-                    'limit_price':          round(limit_price, 4),
-                    'stop_loss_price':      round(stop_loss_price, 4),
                     'action':               action,
+                    'clt_check':            '✓' if clt_ok       else '✗',
+                    'vol_check':            '✓' if vol_ok       else '✗',
+                    'model_ci_check':       '✓ (N/A)' if best_model_name in ('LSTM',) or best_model_name.startswith('GMDH') else ('✓' if model_ci_ok else '✗'),
                     'weight':               0.0,  # filled after optimization
+                    'current_price':        round(current_price, 4),
+                    'predicted_log_return': round(pred_log_return, 6),
+                    'take_profit_price':    round(take_profit_price, 4),
+                    'stop_loss_price':      round(stop_loss_price, 4),
                 })
                 logger.info(f"  {ticker} {action}: log_return={pred_log_return:.6f}, "
-                            f"current={current_price:.4f}, limit={limit_price:.4f}")
+                            f"current={current_price:.4f}, take_profit={take_profit_price:.4f}")
 
             except Exception as e:
                 logger.error(f"Forward forecast failed for {ticker} ({best_model_name}): {e}")

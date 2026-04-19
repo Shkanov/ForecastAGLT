@@ -91,10 +91,19 @@ if run:
         )
 
     if recommendations:
-        rec_df = pd.DataFrame(recommendations)[
-            ['ticker', 'model', 'action', 'weight', 'current_price', 'predicted_log_return', 'limit_price', 'stop_loss_price']
-        ]
+        rec_df = pd.DataFrame(recommendations)[[
+            'ticker', 'model', 'action',
+            'clt_check', 'vol_check', 'model_ci_check',
+            'weight', 'current_price', 'predicted_log_return',
+            'take_profit_price', 'stop_loss_price'
+        ]]
         st.dataframe(rec_df, use_container_width=True)
+        st.download_button(
+            label='Download as CSV',
+            data=rec_df.to_csv(index=False).encode('utf-8'),
+            file_name='portfolio_recommendations.csv',
+            mime='text/csv',
+        )
     else:
         st.warning('No recommendations could be generated.')
 
