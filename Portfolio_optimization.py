@@ -84,7 +84,10 @@ if run:
     with st.spinner('Refitting models and generating recommendations...'):
         recommendations = dataloader.refit_and_forecast(
             target_return=sidebar_dict['target_return'],
-            allow_short=sidebar_dict['allow_short']
+            allow_short=sidebar_dict['allow_short'],
+            clt_z_score=sidebar_dict['clt_z_score'],
+            volatility_z_score=sidebar_dict['volatility_z_score'],
+            ci_alpha=sidebar_dict['ci_alpha'],
         )
 
     if recommendations:

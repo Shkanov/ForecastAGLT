@@ -304,7 +304,8 @@ class DataLoader():
 
         return self.cov_matrix, self.validation_data, self.validation_actual, self.test_data, self.test_actual, self.train_predictions_df_list, self.actual_prices_train, self.test_predictions_df_list, self.actual_prices_test, self.tickers_dict
 
-    def refit_and_forecast(self, target_return=None, allow_short=False):
+    def refit_and_forecast(self, target_return=None, allow_short=False,
+                           clt_z_score=None, volatility_z_score=None, ci_alpha=None):
         """
         Refit the best model per ticker on ALL available data, re-run correlation
         filtering on actual log returns, recompute covariance, make a 1-step-ahead
@@ -313,11 +314,18 @@ class DataLoader():
         Args:
             target_return: Target portfolio return for optimization (optional)
             allow_short: Whether to allow short positions
+            clt_z_score: CLT significance threshold (defaults to config.CLT_Z_SCORE)
+            volatility_z_score: Volatility z-score threshold (defaults to config.VOLATILITY_Z_SCORE)
+            ci_alpha: CI alpha for SARIMA and Chronos (defaults to config.SARIMA_CI_ALPHA)
 
         Returns:
             List of recommendation dicts with keys:
                 ticker, model, predicted_log_return, current_price, limit_price, action, weight
         """
+        clt_z_score        = clt_z_score        if clt_z_score        is not None else config.CLT_Z_SCORE
+        volatility_z_score = volatility_z_score  if volatility_z_score is not None else config.VOLATILITY_Z_SCORE
+        ci_alpha           = ci_alpha           if ci_alpha           is not None else config.SARIMA_CI_ALPHA
+
         import torch
         import pandas as pd
         from experiment_runner_for_best_models import refit_for_forecast
@@ -397,7 +405,7 @@ class DataLoader():
 
                 elif best_model_name == 'SARIMA':
                     pred_scaled, conf_int = model.predict(
-                        n_periods=1, return_conf_int=True, alpha=config.SARIMA_CI_ALPHA)
+                        n_periods=1, return_conf_int=True, alpha=ci_alpha)
                     pred_log_return = float(scaler.inverse_transform(
                         np.array(pred_scaled).reshape(-1, 1))[0][0])
                     ci_lower = float(scaler.inverse_transform(
@@ -422,7 +430,7 @@ class DataLoader():
                                              top_k=config.TRANSFORMER_CONFIG['top_k'],
                                              top_p=config.TRANSFORMER_CONFIG['top_p'])
                     samples  = forecast.numpy()
-                    alpha    = config.CHRONOS_CI_ALPHA
+                    alpha    = ci_alpha
                     pred_scaled     = np.quantile(samples, 0.5, axis=1)[:, -1]
                     ci_lower_scaled = np.quantile(samples, alpha / 2, axis=1)[:, -1]
                     ci_upper_scaled = np.quantile(samples, 1 - alpha / 2, axis=1)[:, -1]
@@ -445,13 +453,13 @@ class DataLoader():
                 residual_std  = float(metrics_df.T.loc[best_model_name, 'Test data Residual Std'])
                 sigma         = close_stock['Close'].iloc[-config.STOP_LOSS_WINDOW:].std()
 
-                clt_ok = abs(pred_log_return) > config.CLT_Z_SCORE * residual_std
-                vol_ok = abs(pred_log_return) / (sigma + 1e-10) > config.VOLATILITY_Z_SCORE
+                clt_ok = abs(pred_log_return) > clt_z_score * residual_std
+                vol_ok = abs(pred_log_return) / (sigma + 1e-10) > volatility_z_score
                 is_significant = clt_ok and vol_ok and model_ci_ok
 
                 action = ('BUY' if pred_log_return > 0 else 'SELL') if is_significant else 'HOLD'
                 logger.info(f"  {ticker} significance: CLT={clt_ok} "
-                            f"(|pred|={abs(pred_log_return):.6f} vs {config.CLT_Z_SCORE}×σ_res={config.CLT_Z_SCORE*residual_std:.6f}), "
+                            f"(|pred|={abs(pred_log_return):.6f} vs {clt_z_score}×σ_res={clt_z_score*residual_std:.6f}), "
                             f"vol={vol_ok} (z={abs(pred_log_return)/(sigma+1e-10):.2f}), "
                             f"model_ci={model_ci_ok} → {action}")
 
