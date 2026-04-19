@@ -7,6 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import streamlit as st
+from logging_config import setup_logging
+
+setup_logging()
 
 from gmdh import CriterionType, Criterion, Multi, Combi, Mia, Ria, PolynomialType
 from pages.utils.utils import make_prediction_recursive

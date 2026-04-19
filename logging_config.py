@@ -16,7 +16,8 @@ def setup_logging(level=logging.INFO):
         level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
-        stream=sys.stdout
+        stream=sys.stdout,
+        force=True  # Override any existing root logger config (e.g. from Streamlit)
     )
 
     # Set specific log levels for noisy libraries
