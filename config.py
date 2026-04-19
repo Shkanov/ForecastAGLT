@@ -115,6 +115,12 @@ DEFAULT_TOP_N_ASSETS = 5
 # Rationale: 50/50 split of test period for hyperparameter tuning vs final evaluation
 PORTFOLIO_VAL_TEST_RATIO = 0.5
 
+# Stop loss configuration (volatility-based sigma stop)
+# Rationale: Crypto assets have heterogeneous volatility; a per-asset sigma stop
+# adapts to each asset's actual risk profile rather than using a fixed percentage.
+STOP_LOSS_SIGMA_MULTIPLIER = 1.5  # Stop placed 1.5σ below entry
+STOP_LOSS_WINDOW = 20             # Rolling window (days) for σ estimation
+
 
 # =============================================================================
 # VALIDATION THRESHOLDS

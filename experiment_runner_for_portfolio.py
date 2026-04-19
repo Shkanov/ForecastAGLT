@@ -10,6 +10,7 @@ This is a one-way dependency chain, not circular.
 """
 
 import requests
+import config
 from experiment_runner_for_best_models import experiment
 from datetime import datetime
 from tqdm import tqdm
@@ -419,12 +420,16 @@ class DataLoader():
                 limit_price = current_price * np.exp(pred_log_return)
                 action      = 'BUY' if pred_log_return > 0 else 'SELL'
 
+                sigma = close_stock['Close'].iloc[-config.STOP_LOSS_WINDOW:].std()
+                stop_loss_price = current_price * np.exp(-config.STOP_LOSS_SIGMA_MULTIPLIER * sigma)
+
                 recommendations.append({
                     'ticker':               ticker,
                     'model':                best_model_name,
                     'predicted_log_return': round(pred_log_return, 6),
                     'current_price':        round(current_price, 4),
                     'limit_price':          round(limit_price, 4),
+                    'stop_loss_price':      round(stop_loss_price, 4),
                     'action':               action,
                     'weight':               0.0,  # filled after optimization
                 })
