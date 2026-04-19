@@ -41,7 +41,7 @@ if run:
     st.subheader('Model Metrics:')
     for ticker in dataloader.valid_tickers:
         st.write(f'{ticker}:')
-        st.write('Best model on test data MAPE: ', dataloader.tickers_dict[ticker]['metrics_df'].T.sort_values(by='Test data MAPE', ascending=True).index[0])
+        st.write('Best model on test data MAE: ', dataloader.tickers_dict[ticker]['metrics_df'].T['Test data MAE'].idxmin())
         st.write(dataloader.tickers_dict[ticker]['metrics_df'])
         
     st.header('Portfolio Optimization Results')
@@ -86,7 +86,7 @@ if run:
 
     if recommendations:
         rec_df = pd.DataFrame(recommendations)[
-            ['ticker', 'model', 'action', 'weight', 'current_price', 'predicted_log_return', 'limit_price']
+            ['ticker', 'model', 'action', 'weight', 'current_price', 'predicted_log_return', 'limit_price', 'stop_loss_price']
         ]
         st.dataframe(rec_df, use_container_width=True)
     else:

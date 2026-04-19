@@ -580,7 +580,8 @@ def calculate_all_metrics(
         "Train data RMSE", "Train data MSE", "Train data MAE", "Train data MAPE",
         "Test data RMSE", "Test data MSE", "Test data MAE", "Test data MAPE",
         "Train data R2 score", "Test data R2 score",
-        "Train data Directional Accuracy", "Test data Directional Accuracy"
+        "Train data Directional Accuracy", "Test data Directional Accuracy",
+        "Test data Residual Std",  # std of test residuals — used for CLT-based CI
     ]
 
     for model_name, (train_pred, test_pred) in predictions.items():
@@ -605,6 +606,10 @@ def calculate_all_metrics(
         # Directional accuracy (fraction where sign(actual) == sign(predicted))
         metrics.append(_directional_accuracy(original_ytrain, train_pred))
         metrics.append(_directional_accuracy(original_ytest, test_pred))
+
+        # Residual std on test set (used for CLT-based signal significance check)
+        test_residuals = original_ytest.flatten() - test_pred.flatten()
+        metrics.append(float(np.std(test_residuals)))
 
         metrics_dict[model_name] = metrics
 

@@ -10,6 +10,7 @@ This is a one-way dependency chain, not circular.
 """
 
 import requests
+import config
 from experiment_runner_for_best_models import experiment
 from datetime import datetime
 from tqdm import tqdm
@@ -387,15 +388,25 @@ class DataLoader():
             last_window   = scaler.transform(close_stock[['Close']].values[-self.time_step_backward:])
 
             try:
+                model_ci_ok = True  # default for models without native CI (LSTM, GMDH)
+
                 if best_model_name == 'LSTM':
                     X = last_window.reshape(1, self.time_step_backward, 1)
                     pred_scaled     = model.predict(X, verbose=0)
                     pred_log_return = float(scaler.inverse_transform(pred_scaled)[0][0])
 
                 elif best_model_name == 'SARIMA':
-                    pred_scaled     = model.predict(n_periods=1)
+                    pred_scaled, conf_int = model.predict(
+                        n_periods=1, return_conf_int=True, alpha=config.SARIMA_CI_ALPHA)
                     pred_log_return = float(scaler.inverse_transform(
                         np.array(pred_scaled).reshape(-1, 1))[0][0])
+                    ci_lower = float(scaler.inverse_transform(
+                        np.array([[conf_int[0][0]]]))[0][0])
+                    ci_upper = float(scaler.inverse_transform(
+                        np.array([[conf_int[0][1]]]))[0][0])
+                    model_ci_ok = not (ci_lower <= 0 <= ci_upper)
+                    logger.info(f"  {ticker} SARIMA CI: [{ci_lower:.6f}, {ci_upper:.6f}], "
+                                f"contains_zero={not model_ci_ok}")
 
                 elif best_model_name.startswith('GMDH'):
                     X = last_window.reshape(1, -1)
@@ -405,19 +416,51 @@ class DataLoader():
 
                 elif best_model_name == 'Transformer':
                     X        = torch.tensor(last_window.reshape(1, -1))
-                    forecast = model.predict(X, 1, num_samples=3,
-                                             temperature=1.0, top_k=50, top_p=1.0)
-                    pred_scaled     = np.quantile(forecast.numpy(), 0.5, axis=1)[:, -1]
+                    forecast = model.predict(X, 1,
+                                             num_samples=config.TRANSFORMER_CONFIG['num_samples'],
+                                             temperature=config.TRANSFORMER_CONFIG['temperature'],
+                                             top_k=config.TRANSFORMER_CONFIG['top_k'],
+                                             top_p=config.TRANSFORMER_CONFIG['top_p'])
+                    samples  = forecast.numpy()
+                    alpha    = config.CHRONOS_CI_ALPHA
+                    pred_scaled     = np.quantile(samples, 0.5, axis=1)[:, -1]
+                    ci_lower_scaled = np.quantile(samples, alpha / 2, axis=1)[:, -1]
+                    ci_upper_scaled = np.quantile(samples, 1 - alpha / 2, axis=1)[:, -1]
                     pred_log_return = float(scaler.inverse_transform(
                         pred_scaled.reshape(-1, 1))[0][0])
+                    ci_lower = float(scaler.inverse_transform(
+                        ci_lower_scaled.reshape(-1, 1))[0][0])
+                    ci_upper = float(scaler.inverse_transform(
+                        ci_upper_scaled.reshape(-1, 1))[0][0])
+                    model_ci_ok = not (ci_lower <= 0 <= ci_upper)
+                    logger.info(f"  {ticker} Chronos CI: [{ci_lower:.6f}, {ci_upper:.6f}], "
+                                f"contains_zero={not model_ci_ok}")
 
                 else:
                     logger.warning(f"Unknown model {best_model_name} for {ticker}, skipping.")
                     continue
 
-                predicted_returns[ticker] = pred_log_return
-                limit_price = current_price * np.exp(pred_log_return)
-                action      = 'BUY' if pred_log_return > 0 else 'SELL'
+                # --- Significance checks ---
+                metrics_df    = self.tickers_dict[ticker]['metrics_df']
+                residual_std  = float(metrics_df.T.loc[best_model_name, 'Test data Residual Std'])
+                sigma         = close_stock['Close'].iloc[-config.STOP_LOSS_WINDOW:].std()
+
+                clt_ok = abs(pred_log_return) > config.CLT_Z_SCORE * residual_std
+                vol_ok = abs(pred_log_return) / (sigma + 1e-10) > config.VOLATILITY_Z_SCORE
+                is_significant = clt_ok and vol_ok and model_ci_ok
+
+                action = ('BUY' if pred_log_return > 0 else 'SELL') if is_significant else 'HOLD'
+                logger.info(f"  {ticker} significance: CLT={clt_ok} "
+                            f"(|pred|={abs(pred_log_return):.6f} vs {config.CLT_Z_SCORE}×σ_res={config.CLT_Z_SCORE*residual_std:.6f}), "
+                            f"vol={vol_ok} (z={abs(pred_log_return)/(sigma+1e-10):.2f}), "
+                            f"model_ci={model_ci_ok} → {action}")
+
+                # Only include in portfolio optimization if signal is significant
+                if is_significant:
+                    predicted_returns[ticker] = pred_log_return
+
+                limit_price     = current_price * np.exp(pred_log_return)
+                stop_loss_price = current_price * np.exp(-config.STOP_LOSS_SIGMA_MULTIPLIER * sigma)
 
                 recommendations.append({
                     'ticker':               ticker,
@@ -425,6 +468,7 @@ class DataLoader():
                     'predicted_log_return': round(pred_log_return, 6),
                     'current_price':        round(current_price, 4),
                     'limit_price':          round(limit_price, 4),
+                    'stop_loss_price':      round(stop_loss_price, 4),
                     'action':               action,
                     'weight':               0.0,  # filled after optimization
                 })
